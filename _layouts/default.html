@@ -21,6 +21,7 @@
         <div class="page__inner-wrap">
           <section class="page__content" itemprop="text">
             {{ content }}
+            {% if page.permalink == "/" %}{% include visitors.html %}{% endif %}
           </section>
         </div>
       </article>

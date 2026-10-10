@@ -1,0 +1,15 @@
+{% assign visitor_src = site.visitors.widget_src | default: "" | strip %}
+{% assign visitor_provider = site.visitors.provider | default: "mapmyvisitors" %}
+{% if visitor_src != "" %}
+  {% if visitor_provider == "mapmyvisitors" or visitor_provider == "clustrmaps" %}
+    <section id="visitors" class="visitors-section" aria-labelledby="visitors-title">
+      <h1 id="visitors-title">🌍 Visitors</h1>
+      <div class="visitor-map">
+        <script type="text/javascript" id="{{ visitor_provider | escape }}" src="{{ visitor_src | escape }}"></script>
+      </div>
+      {% if site.visitors.stats_url %}
+        <p><a href="{{ site.visitors.stats_url | escape }}" target="_blank" rel="noopener noreferrer">View visitor statistics</a></p>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endif %}

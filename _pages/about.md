@@ -15,47 +15,14 @@ redirect_from:
 
 我的研究兴趣是 **计算机视觉** 和 **水下场景的三维重建**。
 
-# 🔥 News
-{: #-news}
+{% for entry in site.data.homepage_sections %}
+{% assign section = entry[1] %}
+{% assign section_content = section.content | default: "" | strip %}
+{% if section_content != "" %}
+# {{ section.title }}
+{: #{{ section.anchor }}}
 
-待补充。
+{{ section_content }}
 
-# 🌍 Visiting Experience
-{: #-visiting-experience}
-
-待补充。
-
-# 📝 Publications
-{: #-publications}
-
-待补充。
-
-# 💯 Teaching
-{: #-teaching}
-
-待补充。
-
-# 🎖 Honors and Awards
-{: #-honors-and-awards}
-
-待补充。
-
-# 🎓 Educations
-{: #-educations}
-
-**武汉大学** · 博士研究生（在读）
-
-# 👩🏻‍💻 Working Experience
-{: #working-experience}
-
-待补充。
-
-# 🪴 Service
-{: #-service}
-
-待补充。
-
-# 💬 Invited Talks
-{: #-invited-talks}
-
-待补充。
+{% endif %}
+{% endfor %}

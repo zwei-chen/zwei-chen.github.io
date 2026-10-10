@@ -1,0 +1,47 @@
+# Empty content hides both the section and its navigation link.
+# Fill the content block with Markdown to display a section.
+news:
+  title: "🔥 News"
+  anchor: "-news"
+  content: ""
+
+visiting_experience:
+  title: "🌍 Visiting Experience"
+  anchor: "-visiting-experience"
+  content: ""
+
+publications:
+  title: "📝 Publications"
+  anchor: "-publications"
+  content: ""
+
+teaching:
+  title: "💯 Teaching"
+  anchor: "-teaching"
+  content: ""
+
+honors:
+  title: "🎖 Honors and Awards"
+  anchor: "-honors-and-awards"
+  content: ""
+
+educations:
+  title: "🎓 Educations"
+  anchor: "-educations"
+  content: |
+    **武汉大学** · 博士研究生（在读）
+
+experience:
+  title: "👩🏻‍💻 Working Experience"
+  anchor: "working-experience"
+  content: ""
+
+service:
+  title: "🪴 Service"
+  anchor: "-service"
+  content: ""
+
+talks:
+  title: "💬 Invited Talks"
+  anchor: "-invited-talks"
+  content: ""

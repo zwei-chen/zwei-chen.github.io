@@ -4,25 +4,33 @@ main:
     url: "/#about-me"
 
   - title: "News"
+    section: "news"
     url: "/#-news"
 
   - title: "Publications"
+    section: "publications"
     url: "/#-publications"
 
   - title: "Honors and Awards"
+    section: "honors"
     url: "/#-honors-and-awards"
 
   - title: "Educations"
+    section: "educations"
     url: "/#-educations"
 
   - title: "Teaching"
+    section: "teaching"
     url: "/#-teaching"
 
   - title: "Service"
+    section: "service"
     url: "/#-service"
 
   - title: "Experience"
+    section: "experience"
     url: "/#working-experience"
 
   - title: "Invited Talks"
+    section: "talks"
     url: "/#-invited-talks"

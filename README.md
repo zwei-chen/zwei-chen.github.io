@@ -2,23 +2,22 @@
 
 主页地址：https://zwei-chen.github.io/
 
-基于 [ArabelaTso/jialuncao.github.io](https://github.com/ArabelaTso/jialuncao.github.io) 的 AcadHomepage 模板配置。采用顶部导航、左侧个人信息、右侧正文的布局。
+使用 [ArabelaTso/jialuncao.github.io](https://github.com/ArabelaTso/jialuncao.github.io) 的 AcadHomepage 模板，保留原有样式、顶部菜单、个人资料栏及全部栏目。未提供的经历和成果标为“待补充”。
 
 ## 修改内容
 
 | 文件 | 内容 |
 | --- | --- |
-| `_config.yml` | 姓名、身份、GitHub、邮箱、Google Scholar、头像路径 |
-| `_pages/about.md` | 个人介绍、研究兴趣、教育经历、联系信息 |
-| `_data/navigation.yml` | 顶部导航名称与锚点 |
-| `images/avatar.jpg` | 配置时下载的 GitHub 头像；换头像时替换此文件 |
-| `_sass/_custom.scss` | 少量布局和字体显示调整 |
+| `_config.yml` | 姓名、身份、研究方向简介、GitHub、邮箱和学术主页 |
+| `_pages/about.md` | 个人介绍、新闻、论文、教育等各栏目内容 |
+| `_data/navigation.yml` | 原模板的顶部菜单和锚点 |
+| `images/avatar.jpg` | 从 zwei-chen 的 GitHub 账号下载的头像 |
 
-邮箱和 Google Scholar 留空时不会显示。新增栏目时，为标题配置 id，并在导航文件中添加相应的 `#id` 链接。
+未提供的联系方式使用空值，不显示链接。Google Scholar 引用统计和 Analytics 尚未启用。填写对应信息后再配置。
 
 ## 本地预览
 
-安装 Ruby 和 Bundler 后，在项目目录运行：
+使用新版 Ruby 和 Bundler；macOS 自带的 Ruby 2.6 无法解析当前依赖。
 
 ```sh
 bundle install
@@ -29,8 +28,10 @@ bundle exec jekyll serve
 
 ## 发布
 
-GitHub 仓库 Settings → Pages 中选择从分支发布（Deploy from a branch），分支为 `main`，目录为 `/ (root)`。提交并推送修改后，GitHub Pages 会自动构建网站。
+GitHub Pages 使用 `main` 分支的 `/ (root)` 目录。提交并推送修改后，GitHub 自动构建发布。
 
-## 致谢与许可
+## 模板与许可
 
-模板源自 AcadHomepage，并使用 Minimal Mistakes、Font Awesome 等组件。保留原模板 MIT 许可证及源码中的第三方版权说明。
+模板的 Sass 样式和顶部菜单内容沿用原版。仅修正了原仓库缺失的父布局、站内跳转的全局新标签设置，并按实际资料配置网站元信息。
+
+保留原 MIT 许可证和源码中的第三方版权说明。

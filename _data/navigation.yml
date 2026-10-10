@@ -1,10 +1,28 @@
-# 顶部导航，url 对应 _pages/about.md 中的标题 id。
+# main links
 main:
-  - title: "个人介绍"
-    url: "#about-me"
-  - title: "研究兴趣"
-    url: "#research"
-  - title: "教育经历"
-    url: "#education"
-  - title: "联系"
-    url: "#contact"
+  - title: "About Me"
+    url: "/#about-me"
+
+  - title: "News"
+    url: "/#-news"
+
+  - title: "Publications"
+    url: "/#-publications"
+
+  - title: "Honors and Awards"
+    url: "/#-honors-and-awards"
+
+  - title: "Educations"
+    url: "/#-educations"
+
+  - title: "Teaching"
+    url: "/#-teaching"
+
+  - title: "Service"
+    url: "/#-service"
+
+  - title: "Experience"
+    url: "/#working-experience"
+
+  - title: "Invited Talks"
+    url: "/#-invited-talks"

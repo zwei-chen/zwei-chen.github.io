@@ -6,7 +6,7 @@
 # `jekyll serve`. If you change this file, please restart the server process.
 
 # Site Settings
-title                    : "陈志伟的个人主页"
+title                    : "Zweichen‘s Homepage"
 description              : "计算机视觉 · 水下场景的三维重建"
 repository               : "zwei-chen/zwei-chen.github.io"
 url                      : "https://zwei-chen.github.io"

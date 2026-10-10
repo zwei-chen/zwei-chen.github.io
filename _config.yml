@@ -97,6 +97,7 @@ exclude:
   - package.json
   - tmp
   - vendor
+  - tests
 keep_files:
   - .git
   - .svn

@@ -1,8 +1,11 @@
 ---
 ---
 
+{% assign language = page.lang | default: 'zh' %}
+{% assign locale = site.data.languages[language] %}
+
 <!doctype html>
-<html lang="zh-CN" class="no-js">
+<html lang="{{ locale.html_lang | default: 'zh-CN' }}" class="no-js">
   <head>
     {% include head.html %}
     {% include head/custom.html %}

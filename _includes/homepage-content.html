@@ -1,0 +1,22 @@
+{% assign language = page.lang | default: 'zh' %}
+{% assign locale = site.data.languages[language] %}
+<span class="anchor" id="about-me"></span>
+
+{{ locale.introduction | markdownify }}
+
+{% for entry in site.data.homepage_sections %}
+{% assign section = entry[1] %}
+{% if page.lang == 'en' %}
+{% assign section_title = section.title %}
+{% assign section_content = section.content_en | default: '' | strip %}
+{% else %}
+{% assign section_title = section.title_zh | default: section.title %}
+{% assign section_content = section.content | default: '' | strip %}
+{% endif %}
+{% if section_content != '' %}
+<h1 id="{{ section.anchor | escape }}">{{ section_title }}</h1>
+
+{{ section_content | markdownify }}
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,35 @@
+zh:
+  html_lang: "zh-CN"
+  og_locale: "zh_CN"
+  name: "陈志伟"
+  bio: "武汉大学博士研究生"
+  description: "计算机视觉 · 水下场景的三维重建"
+  homepage: "主页"
+  navigation_label: "主导航"
+  menu_label: "展开导航菜单"
+  switch_text: "English"
+  switch_label: "Switch to English"
+  switch_lang: "en"
+  switch_url: "/en/"
+  introduction: |
+    我是 **陈志伟**，目前是 **武汉大学博士研究生**。
+
+    我的研究兴趣是 **计算机视觉** 和 **水下场景的三维重建**。
+
+en:
+  html_lang: "en"
+  og_locale: "en_US"
+  name: "Zhiwei Chen"
+  bio: "Ph.D. student at Wuhan University"
+  description: "Computer vision · 3D reconstruction of underwater scenes"
+  homepage: "Homepage"
+  navigation_label: "Main navigation"
+  menu_label: "Toggle navigation menu"
+  switch_text: "中文"
+  switch_label: "切换到中文"
+  switch_lang: "zh-CN"
+  switch_url: "/"
+  introduction: |
+    I am **Zhiwei Chen**, a **Ph.D. student at Wuhan University**.
+
+    My research focuses on **computer vision** and **3D reconstruction of underwater scenes**.

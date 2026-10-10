@@ -1,47 +1,66 @@
-# Empty content hides both the section and its navigation link.
-# Fill the content block with Markdown to display a section.
+# Each language hides empty content and its navigation link independently.
+# content is Chinese; content_en is English. Both accept Markdown.
 news:
   title: "🔥 News"
+  title_zh: "🔥 最新动态"
   anchor: "-news"
   content: ""
+  content_en: ""
 
 visiting_experience:
   title: "🌍 Visiting Experience"
+  title_zh: "🌍 访学经历"
   anchor: "-visiting-experience"
   content: ""
+  content_en: ""
 
 publications:
   title: "📝 Publications"
+  title_zh: "📝 学术论文"
   anchor: "-publications"
   content: ""
+  content_en: ""
 
 teaching:
   title: "💯 Teaching"
+  title_zh: "💯 教学经历"
   anchor: "-teaching"
   content: ""
+  content_en: ""
 
 honors:
   title: "🎖 Honors and Awards"
+  title_zh: "🎖 荣誉与奖励"
   anchor: "-honors-and-awards"
   content: ""
+  content_en: ""
 
 educations:
-  title: "🎓 Educations"
+  title: "🎓 Education"
+  title_zh: "🎓 教育经历"
   anchor: "-educations"
   content: |
     **武汉大学** · 博士研究生（在读）
+  content_en: |
+    **Wuhan University** · Ph.D. student (ongoing)
 
 experience:
   title: "👩🏻‍💻 Working Experience"
+  title_zh: "👩🏻‍💻 工作经历"
   anchor: "working-experience"
   content: ""
+  content_en: ""
 
 service:
   title: "🪴 Service"
+  title_zh: "🪴 学术服务"
   anchor: "-service"
   content: ""
+  content_en: ""
 
 talks:
   title: "💬 Invited Talks"
+  title_zh: "💬 受邀报告"
   anchor: "-invited-talks"
   content: ""
+  content_en: ""

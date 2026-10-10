@@ -8,8 +8,9 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `_config.yml` | 姓名、身份、研究方向简介、GitHub、邮箱和学术主页 |
-| `_pages/about.md` | 个人介绍 |
+| `_config.yml` | 站点标题、GitHub、邮箱和学术主页等公共设置 |
+| `_data/languages.yml` | 中英文姓名、身份、研究方向和个人介绍 |
+| `_pages/about.md`、`_pages/about-en.md` | 中文和英文页面入口 |
 | `_data/homepage_sections.yml` | 新闻、论文、教育等栏目内容；留空时自动隐藏正文和导航 |
 | `_data/navigation.yml` | 原模板的顶部菜单和锚点 |
 | `images/avatar.jpg` | 从 zwei-chen 的 GitHub 账号下载的头像 |
@@ -18,7 +19,7 @@
 
 ## 栏目自动显示
 
-在 `_data/homepage_sections.yml` 中填写各栏目的 `content`。内容为空或只有空格时，正文和对应导航都不显示。可以使用 Markdown，例如：
+在 `_data/homepage_sections.yml` 中填写各栏目的 `content`（中文）和 `content_en`（英文）。各语言独立判断：内容为空或只有空格时，该版正文和对应导航都不显示。可以使用 Markdown，例如：
 
 ```yaml
 news:
@@ -26,9 +27,17 @@ news:
   anchor: "-news"
   content: |
     - 2026.10：这里填写一条真实的新闻。
+  content_en: |
+    - Oct 2026: Add the English translation here.
 ```
 
 保留模板原有的栏目标题、顺序和样式。无需单独修改导航的显示状态。
+
+## 中英文版本
+
+中文首页位于 `/`，英文首页位于 `/en/`。右上角的「English / 中文」链接切换语言，刷新页面后仍保持当前语言。切换无需 JavaScript；两版共用头像、模板和样式。
+
+在 `_data/languages.yml` 修改两种语言的个人资料和介绍。栏目标题的 `title_zh` 为中文，`title` 为英文；在 `_data/navigation.yml` 对应修改菜单名称。
 
 ## 本地预览
 
@@ -40,6 +49,16 @@ cd /Users/zwei/workspace/zwei-chen.github.io
 ```
 
 打开 http://127.0.0.1:4000/ 。保持终端运行，按 `Ctrl+C` 停止。修改页面内容后刷新浏览器；修改 `_config.yml` 后需重启预览服务。
+
+## 验证
+
+```sh
+export PATH="/opt/homebrew/opt/ruby@3.3/bin:$PATH"
+bundle exec jekyll build --destination /private/tmp/zwei-homepage-check
+python3 tests/check_bilingual.py /private/tmp/zwei-homepage-check --exercise-sections
+```
+
+检查中英文链接、个人资料、资源路径，以及只填写一种语言或只填写空格时的栏目显示。测试数据仅在临时目录中使用。
 
 ## 发布
 

@@ -60,3 +60,26 @@
     font-weight: 700;
   }
 }
+
+/* Keep the language switch visible beside the responsive navigation. */
+.masthead__menu {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+
+  .greedy-nav { flex: 1; min-width: 0; }
+}
+
+.language-switch {
+  flex-shrink: 0;
+  padding: .3em .75em;
+  border: 1px solid $border-color;
+  border-radius: 6px;
+  color: $masthead-link-color;
+  font-size: .75em;
+  line-height: 1.5;
+  white-space: nowrap;
+
+  &:hover { color: $masthead-link-color-hover; background: #f7f8f9; }
+  &:focus-visible { outline: 2px solid $primary-color; outline-offset: 3px; }
+}

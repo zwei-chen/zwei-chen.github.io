@@ -1,24 +1,33 @@
 <div class="masthead">
   <div class="masthead__inner-wrap">
     <div class="masthead__menu">
-      <nav id="site-nav" class="greedy-nav">
-        <button><div class="navicon"></div></button>
+      <nav id="site-nav" class="greedy-nav" aria-label="{{ locale.navigation_label | escape }}">
+        <button type="button" aria-label="{{ locale.menu_label | escape }}"><div class="navicon"></div></button>
         <ul class="visible-links">
-          <li class="masthead__menu-item masthead__menu-item--lg masthead__menu-home-item"><a href="#about-me">Homepage</a></li>
+          <li class="masthead__menu-item masthead__menu-item--lg masthead__menu-home-item"><a href="{{ page.url | relative_url }}#about-me">{{ locale.homepage }}</a></li>
           {% for link in site.data.navigation.main %}
             {% assign show_link = true %}
+            {% if page.lang == 'en' %}{% assign link_title = link.title %}{% else %}{% assign link_title = link.title_zh | default: link.title %}{% endif %}
             {% if link.section %}
               {% assign section = site.data.homepage_sections[link.section] %}
-              {% assign section_content = section.content | default: "" | strip %}
-              {% if section_content == "" %}{% assign show_link = false %}{% endif %}
+              {% if page.lang == 'en' %}
+                {% assign section_content = section.content_en | default: '' | strip %}
+              {% else %}
+                {% assign section_content = section.content | default: '' | strip %}
+              {% endif %}
+              {% if section_content == '' %}{% assign show_link = false %}{% endif %}
             {% endif %}
             {% if show_link %}
-              <li class="masthead__menu-item"><a href="{{ domain }}{{ link.url }}">{{ link.title }}</a></li>
+              {% assign section_fragment = link.url | remove_first: '/' %}
+              <li class="masthead__menu-item"><a href="{{ page.url | relative_url }}{{ section_fragment }}">{{ link_title }}</a></li>
             {% endif %}
           {% endfor %}
         </ul>
         <ul class="hidden-links hidden"></ul>
       </nav>
+      {% if page.homepage %}
+        <a class="language-switch" href="{{ locale.switch_url | relative_url }}" lang="{{ locale.switch_lang }}" hreflang="{{ locale.switch_lang }}" aria-label="{{ locale.switch_label | escape }}">{{ locale.switch_text }}</a>
+      {% endif %}
     </div>
   </div>
 </div>

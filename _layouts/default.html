@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="{{ site.locale | default: 'zh-CN' }}">
+  <head>
+    {% include head.html %}
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到正文</a>
+    {% include masthead.html %}
+    <main id="main">
+      {% include sidebar.html %}
+      <article class="page">
+        <div class="page__inner-wrap">
+          <section class="page__content">
+            {{ content }}
+          </section>
+        </div>
+      </article>
+    </main>
+  </body>
+</html>

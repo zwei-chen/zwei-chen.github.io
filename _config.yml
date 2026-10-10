@@ -1,0 +1,65 @@
+# 站点设置
+title: "陈志伟的个人主页"
+description: "陈志伟，武汉大学博士研究生。研究兴趣：计算机视觉、水下场景的三维重建。"
+url: "https://zwei-chen.github.io"
+baseurl: ""
+repository: "zwei-chen/zwei-chen.github.io"
+locale: "zh-CN"
+timezone: "Asia/Shanghai"
+
+# 个人信息：头像来自 zwei-chen 的 GitHub 账号。
+# 更新头像时，将新图片放入 images/，并修改 avatar 路径。
+author:
+  name: "陈志伟"
+  avatar: "/images/avatar.jpg"
+  bio: "武汉大学博士研究生"
+  github: "zwei-chen"
+  email: ""
+  googlescholar: ""
+
+# 留空时不显示相应联系方式。
+google_analytics_id: ""
+google_site_verification: ""
+bing_site_verification: ""
+baidu_site_verification: ""
+
+include:
+  - _pages
+exclude:
+  - docs
+  - README.md
+  - LICENSE
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - .bundle
+  - .github
+  - run_server.sh
+  - assets/js/_main.js
+  - assets/js/plugins
+  - assets/js/vendor
+
+encoding: "utf-8"
+markdown: kramdown
+highlighter: rouge
+permalink: /:categories/:title/
+kramdown:
+  input: GFM
+  hard_wrap: false
+  auto_ids: true
+
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: default
+      author_profile: true
+
+sass:
+  sass_dir: _sass
+  style: compressed
+
+plugins:
+  - jekyll-sitemap
+  - jekyll-redirect-from

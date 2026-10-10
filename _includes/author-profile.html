@@ -1,0 +1,23 @@
+{% assign author = site.author %}
+<div itemscope itemtype="https://schema.org/Person" class="profile_box">
+  <div class="author__avatar">
+    {% if author.avatar and author.avatar != "" %}
+    <img src="{{ author.avatar | relative_url }}" alt="{{ author.name }}的头像" width="175" height="175" itemprop="image">
+    {% endif %}
+  </div>
+  <div class="author__content">
+    <h2 class="author__name" itemprop="name">{{ author.name }}</h2>
+    <p class="author__bio">{{ author.bio }}</p>
+    <div class="author__links">
+      {% if author.github and author.github != "" %}
+      <a href="https://github.com/{{ author.github }}"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
+      {% endif %}
+      {% if author.email and author.email != "" %}
+      <a href="mailto:{{ author.email }}"><i class="fas fa-envelope" aria-hidden="true"></i> Email</a>
+      {% endif %}
+      {% if author.googlescholar and author.googlescholar != "" %}
+      <a href="{{ author.googlescholar }}">Google Scholar</a>
+      {% endif %}
+    </div>
+  </div>
+</div>

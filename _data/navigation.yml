@@ -1,0 +1,10 @@
+# 顶部导航，url 对应 _pages/about.md 中的标题 id。
+main:
+  - title: "个人介绍"
+    url: "#about-me"
+  - title: "研究兴趣"
+    url: "#research"
+  - title: "教育经历"
+    url: "#education"
+  - title: "联系"
+    url: "#contact"

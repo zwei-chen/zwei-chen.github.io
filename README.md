@@ -30,18 +30,6 @@ news:
 
 保留模板原有的栏目标题、顺序和样式。无需单独修改导航的显示状态。
 
-## Visitors 访客地图
-
-已在正文底部接入你自己的 MapMyVisitors 地图，站点统计地址为 [MapMyVisitors](https://mapmyvisitors.com/web/1c8sa)。配置为空时不显示。
-
-1. 在 [MapMyVisitors](https://mapmyvisitors.com/) 注册免费账号，添加 `https://zwei-chen.github.io/`，选择 Map Counter。
-2. 从生成的 `<script>` 嵌入代码中复制 `src` 地址，填入 `_config.yml` 的 `visitors.widget_src`。
-3. 重启本地服务，或推送让 GitHub Pages 重新构建。
-
-也支持 ClustrMaps：将 `visitors.provider` 改为 `clustrmaps`，填写其地图脚本的 `src`。
-
-访客数据由所选服务统计。页面不放置演示人数，也不使用参考网站的统计 ID。
-
 ## 本地预览
 
 已在当前电脑安装 Homebrew Ruby 3.3；启动脚本会自动使用它，并检查项目依赖。

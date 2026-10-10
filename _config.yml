@@ -167,10 +167,3 @@ compress_html:
   clippings: all
   ignore:
     envs: development
-
-# Visitors: paste the src URL from your own MapMyVisitors / ClustrMaps embed.
-# An empty widget_src keeps the Visitors section hidden.
-visitors:
-  provider: "mapmyvisitors"
-  widget_src: "https://mapmyvisitors.com/map.js?d=0y7sxcbqs8DpRDKtY8hidLM1WXMbALHYbCdxnPx6ZkY&cl=ffffff&w=a"
-  stats_url: "https://mapmyvisitors.com/web/1c8sa"

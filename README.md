@@ -69,3 +69,35 @@ GitHub Pages 使用 `main` 分支的 `/ (root)` 目录。提交并推送修改�
 模板的 Sass 样式和顶部菜单内容沿用原版。仅修正了原仓库缺失的父布局、站内跳转的全局新标签设置，并按实际资料配置网站元信息。
 
 保留原 MIT 许可证和源码中的第三方版权说明。
+
+## Dive Vision
+
+四个独立工具均有中文、英文页面，外观默认为跟随系统，也可手动选择明亮或暗色。
+
+| 工具 | 中文 | English |
+|---|---|---|
+| 潜水可视化：逐段独立速度、停留时长、组织腔隔、GF99、时间播放 | `/Diving/vision/` | `/en/Diving/vision/` |
+| 潜水计划：ZHL-16C + GF 自动上升、换气、减压、耗气与氧暴露 | `/Diving/plan/` | `/en/Diving/plan/` |
+| 潜水混气：分压法补气步骤与不可行原因 | `/Diving/blend/` | `/en/Diving/blend/` |
+| SCR 小工具：水面等效 L/min 与气瓶相关 bar/min | `/Diving/scr/` | `/en/Diving/scr/` |
+
+计算在 `Diving/vision/planner.py`，通过 `worker.mjs` 与 Pyodide 在浏览器内运行；
+`engine.js` 处理加载、取消、超时与重试。`vision.js` 管理剖面工具，`utilities.js` 管理混气和 SCR，
+`charts.js` 只负责图形与格式化。`_layouts/diving.html` 与 `_includes/diving/` 为共享双语页面，
+`app.js` 管理外观偏好，`tools.css` 提供主题与响应式样式。
+
+无需 Python 后端，可部署到 GitHub Pages。首次访问需联网加载固定版本 Pyodide CDN。
+四种工具各自保存草稿，中英文版本共享同一份工具草稿。主题设置也保存在本机；选择“跟随系统”时响应系统主题变化。
+所有工具页显示测试阶段免责声明。模型、混气压力定义和验证边界见 `Diving/vision/MODEL.md`。
+
+本地运行 `./run_server.sh`，访问 <http://127.0.0.1:4000/Diving/vision/>。
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_diving*.py'
+# 在 Jekyll 构建完成后检查八个路由
+python3 tests/check_diving_pages.py /path/to/build
+```
+
+CSV/SVG 导出代码保留；浏览器下载测试曾被用户拒绝，本次没有再次发起下载。
+
+主要参数与高级参数在两页完整保留；可视化的上升/下潜速度放在各分段中，Python 自动计算分段耗时。两页不再提供换气耗时或自动安全停留设置。水体密度支持海水/淡水预设和自定义。

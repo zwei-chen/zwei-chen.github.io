@@ -14,7 +14,9 @@
   <body>
 
     {% include browser-upgrade.html %}
-    {% include masthead.html %}
+    {% unless page.hide_navigation %}
+      {% include masthead.html %}
+    {% endunless %}
 
     <div id="main" role="main">
       {% include sidebar.html %}

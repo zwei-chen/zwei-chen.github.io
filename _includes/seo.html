@@ -8,7 +8,8 @@
   {% assign canonical_url = page.url | replace: "index.html", "" | prepend: site.url %}
 {% endif %}
 
-<title>{{ site.title | escape }}</title>
+{% assign seo_title = page.title | default: site.title %}
+<title>{{ seo_title | escape }}</title>
 {% if page.homepage %}
   <link rel="alternate" hreflang="zh-CN" href="{{ '/' | absolute_url }}">
   <link rel="alternate" hreflang="en" href="{{ '/en/' | absolute_url }}">
@@ -36,7 +37,7 @@
 
 <meta property="og:locale" content="{{ locale.og_locale | default: 'zh_CN' }}">
 <meta property="og:site_name" content="{{ site.title }}">
-<meta property="og:title" content="{{ site.title }}">
+<meta property="og:title" content="{{ seo_title | escape }}">
 
 {% if seo_url %}
   <link rel="canonical" href="{{ page.url | prepend: seo_url | replace: "/index.html", "/" }}">

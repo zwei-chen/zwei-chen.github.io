@@ -4,3 +4,7 @@ _site/
 .bundle/
 /vendor/
 .DS_Store
+
+# Python calculation/test bytecode
+__pycache__/
+*.py[cod]

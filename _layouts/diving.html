@@ -1,0 +1,25 @@
+---
+---
+<!doctype html>
+<html lang="{% if page.lang == 'en' %}en{% else %}zh-CN{% endif %}" data-tool="{{ page.tool }}">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f4f8fc"><title>{{ page.title | escape }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%2F%3E" type="image/svg+xml">
+<script>(()=>{let t='system';try{t=localStorage.getItem('dive-theme')||t}catch{}document.documentElement.dataset.theme=['light','dark'].includes(t)?t:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')})()</script>
+<link rel="stylesheet" href="{{ '/Diving/vision/vision.css' | relative_url }}">
+<link rel="stylesheet" href="{{ '/Diving/vision/tools.css' | relative_url }}">
+</head>
+<body>
+{% assign dive_prefix = '/Diving/' %}{% assign other_prefix = '/en/Diving/' %}{% if page.lang == 'en' %}{% assign dive_prefix = '/en/Diving/' %}{% assign other_prefix = '/Diving/' %}{% endif %}
+<div class="app-shell">
+<header class="app-header"><a class="brand" href="{{ dive_prefix | append: 'vision/' | relative_url }}"><span class="brand-icon" aria-hidden="true">🤿</span><div><strong>Dive Vision <small class="testing-badge">{% if page.lang == 'en' %}TESTING{% else %}测试阶段{% endif %}</small></strong><span>{% if page.lang == 'en' %}Dive tools{% else %}潜水工具箱{% endif %}</span></div></a>
+<div class="header-actions"><a id="language-switch" lang="{% if page.lang == 'en' %}zh{% else %}en{% endif %}" href="{{ other_prefix | append: page.tool | append: '/' | relative_url }}">{% if page.lang == 'en' %}中文{% else %}English{% endif %}</a><label class="theme-control"><span>{% if page.lang == 'en' %}Appearance{% else %}外观{% endif %}</span><select id="theme-select" aria-label="{% if page.lang == 'en' %}Appearance{% else %}外观{% endif %}"><option value="system">{% if page.lang == 'en' %}System{% else %}跟随系统{% endif %}</option><option value="light">{% if page.lang == 'en' %}Light{% else %}明亮{% endif %}</option><option value="dark">{% if page.lang == 'en' %}Dark{% else %}暗色{% endif %}</option></select></label></div></header>
+<aside class="testing-notice" role="note"><strong>{% if page.lang == 'en' %}Disclaimer{% else %}免责声明{% endif %}</strong><p>{% if page.lang == 'en' %}This website is in testing and is for learning and demonstration only. It must not be relied on for actual diving, decompression or gas-blending operations. Users assume all risks and consequences arising from its use.{% else %}本网页仍处于测试阶段，仅供学习与演示，不得作为实际潜水、减压或混气操作的依据。因使用本网页产生的风险及后果，由使用者自行承担。{% endif %}</p></aside>
+<nav class="tool-nav" aria-label="{% if page.lang == 'en' %}Dive tools{% else %}潜水工具{% endif %}"><a href="{{ dive_prefix | append: 'vision/' | relative_url }}" {% if page.tool == 'vision' %}aria-current="page"{% endif %}><span>01</span>{% if page.lang == 'en' %}Visualization{% else %}潜水可视化{% endif %}</a><a href="{{ dive_prefix | append: 'plan/' | relative_url }}" {% if page.tool == 'plan' %}aria-current="page"{% endif %}><span>02</span>{% if page.lang == 'en' %}Dive planner{% else %}潜水计划{% endif %}</a><a href="{{ dive_prefix | append: 'blend/' | relative_url }}" {% if page.tool == 'blend' %}aria-current="page"{% endif %}><span>03</span>{% if page.lang == 'en' %}Gas blending{% else %}潜水混气{% endif %}</a><a href="{{ dive_prefix | append: 'scr/' | relative_url }}" {% if page.tool == 'scr' %}aria-current="page"{% endif %}><span>04</span>{% if page.lang == 'en' %}SCR calculator{% else %}SCR 小工具{% endif %}</a></nav>
+{{ content }}
+<footer class="app-footer"><a href="{% if page.lang == 'en' %}{{ '/en/' | relative_url }}{% else %}{{ '/' | relative_url }}{% endif %}#diving">← Diving</a><span>{% if page.lang == 'en' %}Python calculations · Data stays on this device{% else %}Python 计算 · 数据留在本机{% endif %}</span></footer>
+</div>
+<noscript><p class="notice">{% if page.lang == 'en' %}Enable JavaScript to load the in-browser Python engine.{% else %}请启用 JavaScript，以加载浏览器中的 Python 计算环境。{% endif %}</p></noscript>
+<script type="module" src="{{ '/Diving/vision/app.js' | relative_url }}"></script>
+</body></html>

@@ -43,3 +43,8 @@ main:
     title_zh: "受邀报告"
     section: "talks"
     url: "/#-invited-talks"
+
+  - title: "Diving"
+    title_zh: "Diving"
+    section: "diving"
+    url: "/#diving"

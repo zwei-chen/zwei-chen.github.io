@@ -64,3 +64,12 @@ talks:
   anchor: "-invited-talks"
   content: ""
   content_en: ""
+
+diving:
+  title: "Diving"
+  title_zh: "Diving"
+  anchor: "diving"
+  content: |
+    - [潜水可视化](/Diving/vision/) · [潜水计划](/Diving/plan/) · [潜水混气](/Diving/blend/) · [SCR 小工具](/Diving/scr/)
+  content_en: |
+    - [Visualization](/en/Diving/vision/) · [Dive planner](/en/Diving/plan/) · [Gas blending](/en/Diving/blend/) · [SCR calculator](/en/Diving/scr/)

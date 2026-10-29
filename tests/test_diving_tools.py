@@ -59,12 +59,144 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(switch['inspiredInertRatio'],0)
         self.assertTrue(any(row[1]>0 for row in switch['tissues']))
 
+    def test_tissue_gas_shares_use_tissue_pressures_and_handle_zero(self):
+        air=p.visualize(profile())
+        self.assertTrue(all(pair==[1.0,0.0] or pair==(1.0,0.0)
+                            for point in air['points'] for pair in point['tissueGasFractions']))
+        data=profile();data['gases'][0].update(o2=18,he=45)
+        result=p.visualize(data)
+        mixed=next(point for point in result['points'] if point['time']==20)
+        self.assertTrue(all(0<share[1]<1 for share in mixed['tissueGasFractions']))
+        for point in result['points']:
+            for (n,h,_),(n_share,h_share) in zip(point['tissues'],point['tissueGasFractions']):
+                self.assertAlmostEqual(n_share+h_share,1)
+                self.assertAlmostEqual(n_share*(n+h),n)
+                self.assertAlmostEqual(h_share*(n+h),h)
+        # Tissue proportions vary by compartment; they are not breathing-mix fractions.
+        self.assertGreater(max(v[1] for v in mixed['tissueGasFractions'])-min(v[1] for v in mixed['tissueGasFractions']),.05)
+        settings,gases,_=p.validate(profile())
+        simulation=p.Simulation(settings,gases);simulation.tissues=[(0,0)]*16
+        simulation.record(gases[0],'start')
+        self.assertEqual(simulation.points[-1]['tissueGasFractions'],[(0,0)]*16)
+
     def test_current_gf_differs_from_surface(self):
         data=profile();data['segments']=data['segments'][:2]
         result=p.visualize(data)
         self.assertEqual(result['summary']['runtime'],32)
         point=result['points'][-1]
         self.assertLess(point['gf99'],point['surfaceGF'])
+
+    def test_point_partial_pressures_and_cns_follow_selected_time(self):
+        data=profile();data['gases'][0].update(o2=32,he=20)
+        result=p.visualize(data)
+        self.assertEqual(result['points'][0]['cns'],0)
+        values=[point['cns'] for point in result['points']]
+        self.assertTrue(all(a<=b for a,b in zip(values,values[1:])))
+        self.assertAlmostEqual(values[-1],result['summary']['cns'])
+        halfway=next(point for point in result['points'] if point['time']==15)
+        self.assertLess(halfway['cns'],values[-1])
+        for point in result['points']:
+            self.assertAlmostEqual(point['ppn2'],point['ambient']*.48)
+            self.assertAlmostEqual(point['ppo2']+point['ppn2']+point['ambient']*.20,point['ambient'])
+
+    def test_cns_at_inserted_minute_and_after_out_of_range(self):
+        settings,gases,_=p.validate(profile())
+        gas=dict(gases[0],o2=100,he=0,fractions=(0,0))
+        sim=p.Simulation(settings,[gas]);sim.visualization=True
+        sim.record(gas,'start');sim.advance(0,1.17,gas,'segment')
+        minute=next(point for point in sim.points if point['time']==1)
+        self.assertAlmostEqual(minute['cns'],100/300)
+        self.assertAlmostEqual(sim.points[-1]['cns'],1.17*100/300)
+        sim.advance(10,1.17,gas,'segment')
+        self.assertIsNone(sim.points[-1]['cns'])
+        sim.advance(0,1.17,gas,'segment')
+        self.assertIsNone(sim.points[-1]['cns'])
+
+    def test_ndl_boundary_matches_no_stop_planning(self):
+        for o2,he in [(21,0),(21,35)]:
+            with self.subTest(o2=o2,he=he):
+                data=profile();data['segments']=data['segments'][:2]
+                data['segments'][1]['duration']=5
+                data['gases'][0].update(o2=o2,he=he)
+                result=p.visualize(data)
+                request=dict(settings=result['settings'],point=result['points'][-1],gas=result['gases'][0])
+                before=json.dumps(request,sort_keys=True)
+                remaining=p.ndl(request)
+                self.assertEqual(json.dumps(request,sort_keys=True),before)
+                self.assertFalse(remaining['capped'])
+                self.assertGreater(remaining['minutes'],0)
+                data['segments'][1]['duration']=5+remaining['minutes']
+                self.assertEqual(p.plan(data)['summary']['decoTime'],0)
+                data['segments'][1]['duration']+=1
+                self.assertGreater(p.plan(data)['summary']['decoTime'],0)
+
+    def test_ndl_zero_cap_conservatism_and_switch(self):
+        data=profile();data['segments']=data['segments'][:2]
+        result=p.visualize(data)
+        request=dict(settings=result['settings'],point=result['points'][-1],gas=result['gases'][0])
+        self.assertEqual(p.ndl(request)['minutes'],0)
+        initial=dict(request,point=result['points'][0])
+        self.assertEqual(p.ndl(initial)['minutes'],99)
+        self.assertTrue(p.ndl(initial)['capped'])
+        self.assertTrue(p.ndl(dict(initial,gas=dict(o2=100,he=0)))['capped'])
+        start_at_depth=next(point for point in result['points'] if point['time']==2)
+        request['point']=start_at_depth
+        low=p.ndl(request)['minutes']
+        high=p.ndl(dict(request,settings=dict(result['settings'],gfHigh=85)))['minutes']
+        self.assertGreater(high,low)
+        nitrox=p.ndl(dict(request,gas=dict(o2=32,he=0)))['minutes']
+        self.assertGreater(nitrox,low)
+        reply=json.loads(p.handle_json(json.dumps(dict(action='ndl',payload=request,lang='en'))))
+        self.assertTrue(reply['ok']);self.assertEqual(reply['result']['minutes'],low)
+        with self.assertRaises(ValueError):p.ndl(dict(request,point=dict(depth=30,tissues=[])))
+        with self.assertRaises(ValueError):p.ndl(dict(request,gas=dict(o2=80,he=40)))
+
+    def test_gf_pressure_fixed_lines_match_independent_buhlmann_equation(self):
+        data=profile();result=p.visualize(data);g=result['gfPressure']
+        self.assertEqual((g['gfLow'],g['gfHigh']),(50,70))
+        for key,gf in [('low',.5),('high',.7)]:
+            for ambient,tissue_limit in g[key]:
+                # Recover the fraction of the available M-value gradient.
+                self.assertAlmostEqual((tissue_limit-ambient)/(g['a']+ambient/g['b']-ambient),gf)
+                # Independently invert the limit to recover ambient pressure.
+                self.assertAlmostEqual((tissue_limit-gf*g['a'])/(gf/g['b']+1-gf),ambient)
+        self.assertTrue(all(l[1]<h[1] for l,h in zip(g['low'],g['high'])))
+
+    def test_gf_pressure_endpoint_chord_and_actual_plan_anchor(self):
+        data=profile();data['segments']=data['segments'][:2]
+        result=p.plan(data);g=result['gfPressure']
+        self.assertEqual(g['anchorSource'],'plan')
+        self.assertEqual(g['anchorDepth'],result['summary']['gfAnchor'])
+        self.assertEqual(g['combined'][0],g['high'][0])
+        ambient,tissue=g['combined'][1]
+        self.assertAlmostEqual(ambient,g['surfacePressure']+g['anchorDepth']*result['settings']['density']*.0980665)
+        self.assertAlmostEqual((tissue-ambient)/(g['a']+ambient/g['b']-ambient),.5)
+        # The chord is an illustration, deliberately not a change to the solver.
+        before=json.dumps(result,sort_keys=True)
+        p.gf_pressure_diagram(result)
+        self.assertEqual(json.dumps(result,sort_keys=True),before)
+
+    def test_gf_pressure_trimix_and_reference_anchor(self):
+        data=profile();data['gases'][0].update(o2=18,he=45)
+        result=p.visualize(data);g=result['gfPressure']
+        self.assertEqual(g['anchorSource'],'reference')
+        self.assertEqual(g['basisTime'],32)
+        basis=next(row for row in result['points'] if row['time']==32)
+        n,h=basis['tissues'][g['compartment']-1][:2];i=g['compartment']-1
+        self.assertAlmostEqual(g['a'],(p.N2_A[i]*n+p.HE_A[i]*h)/(n+h))
+        self.assertAlmostEqual(g['b'],(p.N2_B[i]*n+p.HE_B[i]*h)/(n+h))
+        self.assertGreater(g['anchorDepth'],0)
+        self.assertEqual(g['combined'][1][0],g['anchorPressure'])
+
+    def test_gf_pressure_no_anchor_equal_gf_and_json(self):
+        data=profile();data['segments']=[dict(depth=1,duration=1,gas='air',kind='descent')]
+        g=p.visualize(data)['gfPressure']
+        self.assertEqual(g['combined'],[])
+        data=profile();data['settings'].update(gfLow=70,gfHigh=70)
+        response=json.loads(p.handle_json(json.dumps(dict(action='visualize',payload=data,lang='en'))))
+        self.assertTrue(response['ok']);g=response['result']['gfPressure']
+        self.assertEqual(g['low'],g['high'])
+        self.assertTrue(all(point['time']>=0 for point in response['result']['points']))
 
     def test_segment_direction(self):
         data=profile();data['segments'][0]['kind']='ascent'
@@ -146,6 +278,146 @@ class ToolTests(unittest.TestCase):
         for invalid in (0,'',float('nan')):
             data['segments'][0]['rate']=invalid
             with self.assertRaises(ValueError):p.visualize(data)
+
+    def test_default_waypoints_connect_depths_without_arrival_dwell(self):
+        data=dict(profile(),useDefaultRates=True,waypoints=[
+            dict(depth=18,duration=2,gas='air'),dict(depth=6,duration=3,gas='air'),
+            dict(depth=0,duration=0,gas='air')])
+        original=json.dumps(data,sort_keys=True)
+        result=p.visualize(data)
+        self.assertAlmostEqual(result['summary']['runtime'],7.8)
+        self.assertEqual([s['duration'] for s in result['segments']],[1,2,1.2,3,.6])
+        self.assertEqual([s['depth'] for s in result['segments']],[18,18,6,6,0])
+        self.assertEqual(result['summary']['endDepth'],0)
+        explicit=dict(data,useDefaultRates=False,segments=[
+            dict(depth=18,rate=18,gas='air',kind='descent'),dict(depth=18,duration=2,gas='air',kind='hold'),
+            dict(depth=6,rate=10,gas='air',kind='ascent'),dict(depth=6,duration=3,gas='air',kind='hold'),
+            dict(depth=0,rate=10,gas='air',kind='ascent')])
+        self.assertEqual(result['points'],p.visualize(explicit)['points'])
+        self.assertEqual(json.dumps(data,sort_keys=True),original)
+
+    def test_default_waypoint_migration_preserves_gas_switch_and_holds(self):
+        data=profile();data['useDefaultRates']=True
+        data['gases'].append(dict(data['gases'][0],id='nitrox',name='EAN32',o2=32))
+        data['segments'][1]['gas']='nitrox'
+        converted=p.segment_timings(data)
+        self.assertIn('waypoints',converted)
+        self.assertEqual(converted['waypoints'],[
+            dict(depth=30,duration=0,gas='air'),dict(depth=30,duration=30,gas='nitrox'),
+            dict(depth=0,duration=0,gas='air')])
+        self.assertEqual(p.visualize(data)['points'],p.visualize(dict(data,waypoints=converted['waypoints']))['points'])
+        data['segments'][1]['gas']='air'
+        self.assertEqual(p.segment_timings(data)['waypoints'],[
+            dict(depth=30,duration=30,gas='air'),dict(depth=0,duration=0,gas='air')])
+
+    def test_default_waypoint_timing_follows_edited_depth_and_plan_rates(self):
+        data=dict(profile(),useDefaultRates=True,mode='plan',settings=dict(descentRate=12,ascentRate=6),
+                  waypoints=[dict(depth=18,duration=2,gas='air'),dict(depth=6,duration=0,gas='air')])
+        timings=p.segment_timings(data)
+        self.assertEqual([s['duration'] for s in timings['segments']],[1.5,2,2])
+        self.assertEqual([s['travelTime'] for s in timings['waypointTimings']],[1.5,2])
+        self.assertEqual([s['totalTime'] for s in timings['waypointTimings']],[3.5,2])
+        data['waypoints'][0]['depth']=12
+        self.assertEqual([s['duration'] for s in p.plan(data)['segments']],[1,2,1])
+
+    def test_default_waypoint_validation_and_zero_hold(self):
+        base=dict(profile(),useDefaultRates=True)
+        for rows in ([],[dict(depth=30,duration=-1,gas='air')],
+                     [dict(depth=30,duration=float('nan'),gas='air')],
+                     [dict(depth=30,duration=2,gas='missing')],
+                     [dict(depth=0,duration=0,gas='air')]):
+            with self.assertRaises(ValueError):p.visualize(dict(base,waypoints=rows))
+        result=p.visualize(dict(base,waypoints=[dict(depth=.5,duration=0,gas='air')]))
+        self.assertAlmostEqual(result['summary']['runtime'],.5/18)
+        self.assertEqual(len(result['segments']),1)
+        self.assertEqual(result['summary']['endDepth'],.5)
+        rows=[dict(depth=3 if i%2==0 else 6,duration=.1,gas='air') for i in range(12)]
+        result=p.visualize(dict(base,waypoints=rows))
+        self.assertEqual(len(result['segments']),24)
+        expanded=p.segment_timings(dict(base,waypoints=rows))['segments']
+        self.assertEqual(result['points'],p.visualize(dict(base,useDefaultRates=False,segments=expanded))['points'])
+
+    def test_default_rates_visualize_without_extra_hold(self):
+        data=profile();data['settings'].update(descentRate=5,ascentRate=4)
+        data['segments']=[dict(depth=30,useDefaultRate=True,duration=90,rate=1,gas='air',kind='descent'),
+                          dict(depth=30,duration=3,useDefaultRate=True,gas='air',kind='hold'),
+                          dict(depth=0,useDefaultRate=True,duration=90,rate=1,gas='air',kind='ascent')]
+        original=json.dumps(data,sort_keys=True)
+        result=p.visualize(data)
+        self.assertEqual(len(result['segments']),3)
+        self.assertAlmostEqual(result['summary']['runtime'],30/18+3+30/10)
+        self.assertEqual([s['duration'] for s in result['segments']],[30/18,3,3])
+        self.assertEqual(json.dumps(data,sort_keys=True),original)
+        explicit=json.loads(json.dumps(data))
+        for row,rate in zip(explicit['segments'],[18,None,10]):
+            row.pop('useDefaultRate');row['rate']=rate
+        self.assertEqual(result['points'],p.visualize(explicit)['points'])
+
+    def test_default_rates_plan_follow_settings_and_depths(self):
+        data=profile();data['settings'].update(descentRate=12,ascentRate=6)
+        data['segments']=[dict(depth=18,useDefaultRate=True,duration=99,rate=1,gas='air'),
+                          dict(depth=18,duration=2,gas='air'),
+                          dict(depth=6,useDefaultRate=True,duration=99,rate=1,gas='air')]
+        result=p.plan(data)
+        self.assertEqual([s['duration'] for s in result['segments']],[1.5,2,2])
+        explicit=json.loads(json.dumps(data))
+        for row,duration in zip(explicit['segments'],[1.5,2,2]):
+            row.pop('useDefaultRate',None);row['duration']=duration
+        self.assertEqual(result['points'],p.plan(explicit)['points'])
+        data['settings'].update(descentRate=18,ascentRate=12)
+        self.assertEqual([s['duration'] for s in p.plan(data)['segments']],[1,2,1])
+        data['segments'][2]['depth']=12
+        self.assertEqual(p.plan(data)['segments'][2]['duration'],.5)
+
+    def test_global_default_rate_switch_overrides_all_legacy_rows(self):
+        data=profile();data['settings'].update(descentRate=12,ascentRate=6)
+        data['segments']=[dict(depth=18,duration=3,rate=9,useDefaultRate=False,gas='air',kind='descent'),
+                          dict(depth=18,duration=2,gas='air',kind='hold'),
+                          dict(depth=6,duration=4,rate=3,useDefaultRate=True,gas='air',kind='ascent')]
+        original=json.dumps(data,sort_keys=True)
+        for mode,automatic,manual in [('vision',[1,2,1.2],[2,2,4]),('plan',[1.5,2,2],[3,2,4])]:
+            for enabled,expected in [(True,automatic),(False,manual)]:
+                resolved=p.segment_timings(dict(data,mode=mode,useDefaultRates=enabled))
+                self.assertIs(resolved['useDefaultRates'],enabled)
+                self.assertEqual([row['duration'] for row in resolved['segments']],expected)
+                runner=p.visualize if mode=='vision' else p.plan
+                result=runner(dict(data,useDefaultRates=enabled))
+                self.assertEqual([row['duration'] for row in result['segments']],expected)
+        self.assertEqual(json.dumps(data,sort_keys=True),original)
+
+    def test_legacy_default_modes_can_migrate_without_changed_travel_times(self):
+        data=profile()
+        data['segments'][0]['useDefaultRate']=True
+        mixed=p.segment_timings(data)
+        self.assertFalse(mixed['useDefaultRates'])
+        migrated=json.loads(json.dumps(data))
+        for saved,resolved in zip(migrated['segments'],mixed['segments']):
+            if saved.get('useDefaultRate'):
+                saved['rate']=resolved['rate'];saved['duration']=resolved['duration']
+            saved.pop('useDefaultRate',None)
+        migrated['useDefaultRates']=False
+        self.assertEqual(p.visualize(migrated)['points'],p.visualize(data)['points'])
+        data['segments'][2]['useDefaultRate']=True
+        self.assertTrue(p.segment_timings(data)['useDefaultRates'])
+
+    def test_global_default_mode_rejects_invalid_values(self):
+        for value in ('true',1,None):
+            with self.assertRaises(ValueError):p.visualize(dict(profile(),useDefaultRates=value))
+
+    def test_default_rates_short_travel_and_manual_fallback(self):
+        data=profile();data['segments']=[dict(depth=.5,useDefaultRate=True,gas='air',kind='descent')]
+        self.assertAlmostEqual(p.visualize(data)['summary']['runtime'],.5/18)
+        for moving in ('plan','vision'):
+            rows=[dict(depth=18,duration=4,rate=3,useDefaultRate=False,gas='air')]
+            response=p.segment_timings(dict(mode=moving,segments=rows))['segments'][0]
+            self.assertEqual(response['duration'],4 if moving=='plan' else 6)
+        for value in ('true',1,None):
+            data['segments'][0]['useDefaultRate']=value
+            with self.assertRaises(ValueError):p.visualize(data)
+        data['segments'][0]['useDefaultRate']=True
+        reply=json.loads(p.handle_json(json.dumps(dict(action='segments',payload=dict(data,mode='plan')))))
+        self.assertTrue(reply['ok'])
+        self.assertAlmostEqual(reply['result']['segments'][0]['duration'],.5/18)
 
     def test_visual_legacy_durations_and_short_movement(self):
         data=profile();old=p.visualize(data)

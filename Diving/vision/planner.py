@@ -84,7 +84,7 @@ def oxygen_rate(ppo2_bar):
     return 100/45, otu
 
 
-def validate(payload):
+def validate(payload, *, mode='plan'):
     settings = dict(DEFAULTS)
     limits = dict(gfLow=(1,100),gfHigh=(1,100),surfacePressure=(.6,1.1),density=(.95,1.1),
                   ascentRate=(1,18),descentRate=(1,30),switchTime=(0,5),sacWork=(1,100),
@@ -108,8 +108,12 @@ def validate(payload):
         gas['fractions'] = ((100-gas['o2']-gas['he'])/100,gas['he']/100)
         gases.append(gas)
     segments = []
-    raw_segments = payload.get('segments',[])
-    if not isinstance(raw_segments,list) or not 1 <= len(raw_segments) <= 12: raise ValueError('请设置 1–12 个潜水分段。')
+    raw_segments = segment_timings(dict(payload,settings=settings,mode=mode))['segments']
+    if not isinstance(raw_segments,list) or not 1 <= len(raw_segments) <= 24: raise ValueError('请设置 1–24 个潜水分段。')
+    if payload.get('useDefaultRates') is True and 'waypoints' in payload:
+        for i,row in enumerate(payload['waypoints']):
+            if not any(g['id']==str(row.get('gas','')) and g['enabled'] for g in gases):
+                raise ValueError(f'第 {i+1} 段引用了停用或不存在的气体。')
     for i,row in enumerate(raw_segments):
         gas_id = str(row.get('gas',''))
         if not any(g['id']==gas_id and g['enabled'] for g in gases): raise ValueError(f'第 {i+1} 段引用了停用或不存在的气体。')
@@ -149,12 +153,14 @@ class Simulation:
             self.warning_keys.add(key)
             self.warnings.append(dict(code=code,message=text))
 
-    def record(self, gas, phase, *, time=None, depth=None, tissues=None, used=None):
+    def record(self, gas, phase, *, time=None, depth=None, tissues=None, used=None, cns=None, cns_known=None):
         time=self.time if time is None else time
         if abs(time-round(time))<1e-8: time=float(round(time))
         depth=self.depth if depth is None else depth
         tissues=self.tissues if tissues is None else tissues
         used=self.used if used is None else used
+        cns=self.cns if cns is None else cns
+        cns_known=self.cns_known if cns_known is None else cns_known
         ambient = self.pressure(depth)
         inspired_inert = (ambient-WATER_VAPOUR)*sum(gas['fractions'])
         self.points.append(dict(time=time,depth=depth,ambient=ambient,phase=phase,gas=gas['id'],
@@ -164,8 +170,10 @@ class Simulation:
             gf=self.gf(depth)*100,gf99=surface_gf(tissues,ambient),
             tissueGF=[(total-ambient)/(a+ambient/b-ambient)*100 for total,a,b in coefficients(tissues)],
             surfaceGF=surface_gf(tissues,self.surface),ppo2=ambient*gas['o2']/100,
+            ppn2=ambient*gas['fractions'][0],cns=cns if cns_known else None,
             inspiredInert=inspired_inert,inspiredInertRatio=inspired_inert/ambient,
             tissueLoading=[tissue_loading(total,ambient,a+ambient/b) for total,a,b in coefficients(tissues)],
+            tissueGasFractions=[(n/(n+h),h/(n+h)) if n+h>0 else (0,0) for n,h in tissues],
             tissues=[[n,h,a+ambient/b] for (n,h),(_,a,b) in zip(tissues,coefficients(tissues))],
             pressures={key:self.gases[key]['pressure']-volume/self.gases[key]['size'] for key,volume in used.items()}))
 
@@ -187,6 +195,8 @@ class Simulation:
         for i in range(steps):
             target = start_depth+(depth-start_depth)*(i+1)/steps
             p0,p1 = self.pressure(self.depth),self.pressure(target)
+            po2 = (p0+p1)/2*gas['o2']/100
+            cns,otu = oxygen_rate(po2)
             # Add exact minute snapshots without altering the integration grid,
             # schedule, oxygen accumulation or subsequent tissue state.
             next_time=start_time+dt*(i+1)
@@ -197,12 +207,11 @@ class Simulation:
                 minute_tissues=load_tissues(self.tissues,p0,minute_pressure,elapsed,gas['fractions'])
                 minute_used=dict(self.used)
                 minute_used[gas['id']]+=rmv*(p0+minute_pressure)/2*elapsed
-                self.record(gas,phase,time=minute,depth=minute_depth,tissues=minute_tissues,used=minute_used)
+                self.record(gas,phase,time=minute,depth=minute_depth,tissues=minute_tissues,used=minute_used,
+                            cns=self.cns+(cns or 0)*elapsed,cns_known=self.cns_known and cns is not None)
             self.tissues = load_tissues(self.tissues,p0,p1,dt,gas['fractions'])
             self.used[gas['id']] += rmv*(p0+p1)/2*dt
-            po2 = (p0+p1)/2*gas['o2']/100
             self.max_ppo2 = max(self.max_ppo2,max(p0,p1)*gas['o2']/100)
-            cns,otu = oxygen_rate(po2)
             if cns is None: self.cns_known=False
             else: self.cns += cns*dt
             self.otu += otu*dt
@@ -298,6 +307,40 @@ class Simulation:
         return gas
 
 
+def ndl(payload):
+    """Remaining whole minutes on the current gas, followed by a no-stop ascent.
+
+    Reuse the planner's one-second ascent checks at GF High, with no gas switch.
+    Search each whole minute to avoid assuming monotonic mixed-gas loading.
+    99 is a display/search cap, not an assertion of unlimited no-stop time.
+    """
+    raw=payload.get('settings',{})
+    settings=dict(DEFAULTS)
+    for key,low,high in [('gfHigh',1,100),('surfacePressure',.6,1.1),('density',.95,1.1),('ascentRate',1,18)]:
+        settings[key]=number(raw.get(key,settings[key]),key,low,high)
+    point=payload.get('point',{})
+    depth=number(point.get('depth'),'depth',0,150)
+    rows=point.get('tissues',[])
+    if not isinstance(rows,list) or len(rows)!=16 or any(not isinstance(row,(list,tuple)) or len(row)<2 for row in rows):
+        raise ValueError('NDL requires 16 tissue compartments.')
+    tissues=[(number(row[0],'N2',0,100),number(row[1],'He',0,100)) for row in rows]
+    raw_gas=payload.get('gas',{})
+    o2=number(raw_gas.get('o2'),'O2',1,100)
+    he=number(raw_gas.get('he'),'He',0,99)
+    if o2+he>100: raise ValueError('O2 + He must not exceed 100%.')
+    gas=dict(id='current',o2=o2,he=he,fractions=((100-o2-he)/100,he/100))
+    probe=Simulation(settings,[gas])
+    probe.depth=depth
+    probe.tissues=tissues
+    ambient=probe.pressure(depth)
+    for elapsed in range(100):
+        if ceiling(probe.tissues,settings['gfHigh']/100)>ambient+1e-8 or not probe.can_ascend(0,gas):
+            return dict(minutes=max(0,elapsed-1),capped=False,ascentRate=settings['ascentRate'])
+        if elapsed<99:
+            probe.tissues=load_tissues(probe.tissues,ambient,ambient,1,gas['fractions'])
+    return dict(minutes=99,capped=True,ascentRate=settings['ascentRate'])
+
+
 def gas_details(settings, gases):
     metre=settings['density']*.0980665
     return [dict(id=g['id'],n2=100-g['o2']-g['he'],mod=max(0,(settings['ppo2Work']/(g['o2']/100)-settings['surfacePressure'])/metre),
@@ -305,7 +348,7 @@ def gas_details(settings, gases):
 
 
 def plan(payload, auto_ascent=True):
-    settings,gases,segments=validate(payload)
+    settings,gases,segments=validate(payload,mode='plan' if auto_ascent else 'vision')
     simulation=Simulation(settings,gases)
     simulation.visualization=not auto_ascent
     current=simulation.gases[segments[0]['gas']]
@@ -336,7 +379,7 @@ def plan(payload, auto_ascent=True):
     integer_points={int(round(point['time'])):i for i,point in enumerate(simulation.points) if abs(point['time']-round(point['time']))<1e-8}
     minute_indices=[integer_points[minute] for minute in range(math.floor(simulation.time+1e-8)+1)]
     if minute_indices[-1]!=len(simulation.points)-1: minute_indices.append(len(simulation.points)-1)
-    return dict(mode='plan' if auto_ascent else 'visualize',settings=settings,gases=gas_results,gasDetails=gas_details(settings,gases),
+    result=dict(mode='plan' if auto_ascent else 'visualize',settings=settings,gases=gas_results,gasDetails=gas_details(settings,gases),
                 segments=segments,points=simulation.points,minuteIndices=minute_indices,schedule=simulation.schedule,warnings=simulation.warnings,
                 summary=dict(runtime=simulation.time,maxDepth=max(row['depth'] for row in segments),
                     decoTime=deco,tts=simulation.time-ascent_start,firstStop=next((row['depth'] for row in simulation.schedule if row['decompression'] and row['duration']>0),None),
@@ -344,6 +387,10 @@ def plan(payload, auto_ascent=True):
                     gasUsed=sum(simulation.used.values()),maxPPO2=simulation.max_ppo2,
                     maxGF99=max(point['gf99'] for point in simulation.points),
                     endDepth=simulation.depth))
+    if payload.get('useDefaultRates') is True and 'waypoints' in payload:
+        result['waypointTimings']=waypoint_timings(dict(payload,mode='plan' if auto_ascent else 'vision'))['waypointTimings']
+    result['gfPressure']=gf_pressure_diagram(result)
+    return result
 
 
 def sac(payload):
@@ -360,22 +407,91 @@ def sac(payload):
                 usedLitres=size*(start-end),pressureDrop=start-end,pressureRate=(start-end)/duration/ambient)
 
 
-def segment_timings(payload):
-    """Resolve each explicit movement speed into minutes; migrate duration drafts."""
-    rows=payload.get('segments',[])
+def waypoints_from_segments(segments):
+    """Pair a movement with its following hold only when depth and gas match."""
+    waypoints=[]
+    previous_moving=False
+    for row in segments:
+        moving=row['kind']!='hold'
+        if not moving and previous_moving and waypoints[-1]['depth']==row['depth'] and waypoints[-1]['gas']==row['gas']:
+            waypoints[-1]['duration']=row['duration']
+        else:
+            waypoints.append(dict(depth=row['depth'],duration=0 if moving else row['duration'],gas=row['gas']))
+        previous_moving=moving
+    return waypoints
+
+
+def waypoint_timings(payload):
+    """Expand depth/hold targets into physical movement and hold segments."""
+    rows=payload.get('waypoints')
     if not isinstance(rows,list) or not 1<=len(rows)<=12:
-        raise ValueError('请设置 1–12 个潜水分段。')
+        raise ValueError('默认速度模式请设置 1–12 个目标深度。')
+    mode=payload.get('mode','vision')
+    if mode not in ('plan','vision'): raise ValueError('Invalid segment timing mode.')
+    settings=payload.get('settings',{})
+    previous=0
+    segments=[]
+    timings=[]
+    waypoints=[]
+    for i,row in enumerate(rows):
+        depth=number(row.get('depth'),f'第 {i+1} 段深度',0,150)
+        hold=number(row.get('duration'),f'第 {i+1} 段耗时',0,180)
+        gas=str(row.get('gas',''))
+        travel=0
+        if depth!=previous:
+            kind='descent' if depth>previous else 'ascent'
+            key=kind+'Rate'
+            rate=number(settings.get(key,DEFAULTS[key]) if mode=='plan' else DEFAULTS[key],key,1,30 if kind=='descent' else 18)
+            travel=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
+            segments.append(dict(depth=depth,duration=travel,rate=rate,gas=gas,kind=kind))
+        if hold>0:
+            segments.append(dict(depth=depth,duration=hold,rate=None,gas=gas,kind='hold'))
+        waypoints.append(dict(depth=depth,duration=hold,gas=gas))
+        timings.append(dict(travelTime=travel,totalTime=travel+hold))
+        previous=depth
+    return dict(segments=segments,waypoints=waypoints,waypointTimings=timings,useDefaultRates=True)
+
+
+def segment_timings(payload):
+    """Resolve travel time in Python without adding any arrival/rounding dwell.
+
+    Old plan durations take precedence over cached rates; visual segments use
+    their explicit rates. The global switch overrides legacy per-row choices.
+    """
+    if payload.get('useDefaultRates') is True and 'waypoints' in payload:
+        return waypoint_timings(payload)
+    rows=payload.get('segments',[])
+    if not isinstance(rows,list) or not 1<=len(rows)<=24:
+        raise ValueError('请设置 1–24 个潜水分段。')
+    mode=payload.get('mode','vision')
+    if mode not in ('plan','vision'): raise ValueError('Invalid segment timing mode.')
+    settings=payload.get('settings',{})
+    has_global='useDefaultRates' in payload
+    global_default=payload.get('useDefaultRates')
+    if has_global and not isinstance(global_default,bool):
+        raise ValueError('Default speed must be enabled or disabled.')
     previous=0
     segments=[]
     for i,row in enumerate(rows):
         depth=number(row.get('depth'),f'第 {i+1} 段深度',0,150)
-        kind=row.get('kind') or ('descent' if depth>previous else 'ascent' if depth<previous else 'hold')
+        inferred='descent' if depth>previous else 'ascent' if depth<previous else 'hold'
+        kind=(row.get('kind') or inferred) if mode=='vision' else inferred
         valid=(kind=='hold' and depth==previous or kind=='descent' and depth>previous or kind=='ascent' and depth<previous)
         if not valid: raise ValueError('分段类型与目标深度不一致：停留须保持上一深度，下潜须更深，上升须更浅。')
+        default_rate=global_default if has_global else row.get('useDefaultRate',False)
+        if not isinstance(default_rate,bool): raise ValueError('Default speed must be enabled or disabled.')
         if kind=='hold':
-            duration=number(row.get('duration'),f'第 {i+1} 段耗时',.1,180)
+            duration=number(row.get('duration'),f'第 {i+1} 段耗时',.000001,180)
             rate=None
-        elif 'rate' in row and row['rate'] is not None:
+        elif default_rate:
+            key=kind+'Rate'
+            raw_rate=settings.get(key,DEFAULTS[key]) if mode=='plan' else DEFAULTS[key]
+            rate=number(raw_rate,key,1,30 if kind=='descent' else 18)
+            duration=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
+        elif mode=='plan' and row.get('duration') is not None:
+            duration=number(row['duration'],f'第 {i+1} 段耗时',.000001,180)
+            rate=abs(depth-previous)/duration
+        elif row.get('rate') is not None:
             rate=number(row['rate'],f'第 {i+1} 段速度',.1,60)
             duration=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
         else:
@@ -383,13 +499,50 @@ def segment_timings(payload):
             rate=abs(depth-previous)/duration
         segments.append(dict(row,depth=depth,kind=kind,rate=rate,duration=duration))
         previous=depth
-    return dict(segments=segments)
+    moving=[row for row in segments if row['kind']!='hold']
+    resolved_default=global_default if has_global else bool(moving) and all(row.get('useDefaultRate',False) for row in moving)
+    return dict(segments=segments,useDefaultRates=resolved_default,waypoints=waypoints_from_segments(segments))
 
 
 def visualize(payload):
-    payload=dict(payload)
-    payload['segments']=segment_timings(payload)['segments']
     return plan(payload,auto_ascent=False)
+
+
+def gf_pressure_diagram(result):
+    """Pressure-space reference lines, separate from the decompression solver.
+
+    Freeze one automatically chosen controlling compartment at the last maximum
+    depth snapshot. A pressure-space endpoint chord is explicitly illustrative:
+    the solver still interpolates GF itself linearly with depth.
+    """
+    settings=result['settings']
+    surface=settings['surfacePressure']; metre=settings['density']*.0980665
+    low=settings['gfLow']/100; high=settings['gfHigh']/100
+    deepest=max(point['depth'] for point in result['points'])
+    basis=next(point for point in reversed(result['points']) if abs(point['depth']-deepest)<1e-7)
+    rows=list(coefficients([tuple(row[:2]) for row in basis['tissues']]))
+    limits=[(total-low*a)/(1-low+low/b) for total,a,b in rows]
+    index=max(range(16),key=lambda i:limits[i])
+    _,a,b=rows[index]
+    anchor_depth=result['summary']['gfAnchor']
+    anchor_source='plan' if anchor_depth is not None else 'reference'
+    if anchor_depth is None:
+        anchor_depth=max(0,(limits[index]-surface)/metre)
+    anchor=surface+anchor_depth*metre
+    maximum=max(surface+deepest*metre,anchor,surface+.5)
+    def allowed(pressure,gf):
+        return pressure+gf*(a+pressure/b-pressure)
+    fixed_low=[[pressure,allowed(pressure,low)] for pressure in (surface,maximum)]
+    fixed_high=[[pressure,allowed(pressure,high)] for pressure in (surface,maximum)]
+    # No positive Low anchor means no Low-to-High transition to illustrate.
+    combined=([[surface,allowed(surface,high)],[anchor,allowed(anchor,low)]]
+              if anchor_depth>1e-8 else [])
+    return dict(gfLow=settings['gfLow'],gfHigh=settings['gfHigh'],
+        surfacePressure=surface,anchorPressure=anchor,anchorDepth=anchor_depth,
+        anchorSource=anchor_source,maximumPressure=maximum,
+        basisTime=basis['time'],compartment=index+1,a=a,b=b,
+        low=fixed_low,high=fixed_high,combined=combined,
+        ambient=[[0,0],[maximum,maximum]],mValue=[[0,a],[maximum,a+maximum/b]])
 
 
 def blend(payload):
@@ -464,6 +617,9 @@ def blend(payload):
 # Error localization at the JSON boundary keeps the numerical API language-neutral.
 # Parameterized messages are translated through ordered phrase replacements.
 EN_MESSAGES = {
+'请设置 1–24 个潜水分段。':'Set 1–24 dive segments.',
+'默认速度模式请设置 1–12 个目标深度。':'Set 1–12 target depths in default speed mode.',
+
 'GF Low 不能大于 GF High。':'GF Low must not exceed GF High.',
 '末站深度只能为 3 m 或 6 m。':'The last stop must be 3 m or 6 m.',
 '底部氧分压上限不能大于减压氧分压上限。':'The working PPO2 limit must not exceed the decompression limit.',
@@ -522,6 +678,7 @@ def handle_json(request):
         if action=='plan': result=plan(payload)
         elif action=='visualize': result=visualize(payload)
         elif action=='segments': result=segment_timings(payload)
+        elif action=='ndl': result=ndl(payload)
         elif action=='blend': result=blend(payload)
         elif action=='sac': result=sac(payload)
         elif action=='environment':

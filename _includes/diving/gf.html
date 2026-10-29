@@ -1,0 +1,6 @@
+<section id="gf-pressure-view" aria-label="{% if page.lang == 'en' %}GF pressure subview{% else %}GF 压力子图{% endif %}" hidden>
+  <p class="hint gf-pressure-anchor" id="gf-pressure-anchor"></p>
+  <div id="gf-pressure-chart" class="gf-pressure-chart"><p class="chart-placeholder">{% if page.lang == 'en' %}Calculate to view GF pressure relationships.{% else %}计算后显示 GF 压力关系。{% endif %}</p></div>
+  <div id="gf-pressure-legend" class="chart-legend"></div>
+  <p class="hint gf-pressure-explanation">{% if page.lang == 'en' %}Fixed GF values give straight pressure-limit lines. The Low/High line joins GF Low at its anchor to GF High at the surface. This endpoint chord is illustrative; the planner interpolates GF itself with depth, so its exact pressure boundary can curve. The three lines share coefficients automatically taken from the controlling tissue at the end of the deepest exposure.{% else %}固定 GF 对应直线压力上限。Low/High 连线连接起点的 GF Low 与水面的 GF High，仅作端点示意；计划按深度插值 GF，精确的压力边界可能弯曲。三条线共用最深处停留结束时自动确定的控制组织系数。{% endif %}</p>
+</section>

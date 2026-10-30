@@ -1,6 +1,7 @@
 """Check built tool routes, language output and local asset/link integrity."""
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit
 import re
 import sys
 
@@ -39,7 +40,7 @@ for language,prefix in [('zh',''),('en','en/')]:
             assert '/'+prefix+'Diving/'+other+'/' in page.links,path
         target=('/Diving/' if language=='en' else '/en/Diving/')+tool+'/'
         assert target in page.links,path
-        for url in page.assets:assert (root/url.lstrip('/')).is_file(),(path,url)
+        for url in page.assets:assert (root/urlsplit(url).path.lstrip('/')).is_file(),(path,url)
         if tool in ('vision','plan'):
             expected=['gfHigh','gfLow']+(['ascentRate','descentRate'] if tool=='plan' else [])+['waterType','sacWork']
             assert page.primary==expected,(path,page.primary)

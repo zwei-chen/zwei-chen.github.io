@@ -112,6 +112,71 @@ class ToolTests(unittest.TestCase):
         sim.advance(0,1.17,gas,'segment')
         self.assertIsNone(sim.points[-1]['cns'])
 
+    def test_plus_five_projection_matches_extended_profile(self):
+        # The +5 hold changes the tissues; it must not be added to the returned TTS.
+        for he in (0,35):
+            data=profile();data['segments']=data['segments'][:2];data['gases'][0]['he']=he
+            original=p.plan(data)
+            point=next(row for row in original['points'] if row['time']==32)
+            request=dict(settings=original['settings'],gases=original['gases'],point=point)
+            before=json.dumps(request,sort_keys=True)
+            response=json.loads(p.handle_json(json.dumps(dict(action='point_metrics',payload=request,lang='en'))))
+            self.assertTrue(response['ok'],response)
+            forecast=response['result']['projection']
+            data['segments'][1]['duration']+=5
+            extended=p.plan(data)
+            self.assertAlmostEqual(forecast['tts'],original['summary']['tts'])
+            self.assertAlmostEqual(forecast['atPlus5'],extended['summary']['tts'])
+            self.assertAlmostEqual(forecast['deltaPlus5'],extended['summary']['tts']-original['summary']['tts'])
+            self.assertGreater(forecast['deltaPlus5'],0)
+            self.assertEqual(json.dumps(request,sort_keys=True),before)
+
+    def test_plus_five_no_stop_and_surface(self):
+        data=profile();data['segments']=[dict(depth=9,rate=18,gas='air',kind='descent')]
+        result=p.visualize(data)
+        request=dict(settings=result['settings'],gases=result['gases'],point=result['points'][-1])
+        response=json.loads(p.handle_json(json.dumps(dict(action='point_metrics',payload=request))))
+        self.assertTrue(response['ok'],response)
+        projection=response['result']['projection']
+        self.assertAlmostEqual(projection['tts'],.9)
+        self.assertAlmostEqual(projection['atPlus5'],.9)
+        self.assertAlmostEqual(projection['deltaPlus5'],0)
+        self.assertGreater(response['result']['ndl']['minutes'],5)
+        request['point']=result['points'][0]
+        projection=p.point_metrics(request)['projection']
+        self.assertEqual([projection[k] for k in ('tts','atPlus5','deltaPlus5')],[0,0,0])
+
+    def test_plus_five_respects_enabled_gases_and_stop_anchor(self):
+        data=profile();data['segments']=data['segments'][:2]
+        data['gases'].append(dict(id='ean50',name='EAN50',o2=50,he=0,size=6,pressure=200,switchDepth=21,enabled=True))
+        result=p.plan(data)
+        point=next(row for row in result['points'] if row['time']==32)
+        request=dict(settings=result['settings'],gases=result['gases'],point=point)
+        forecast=p.point_metrics(request)['projection']
+        self.assertAlmostEqual(forecast['tts'],result['summary']['tts'])
+        request['gases']=[dict(g,enabled=False) if g['id']=='ean50' else g for g in request['gases']]
+        self.assertGreater(p.point_metrics(request)['projection']['tts'],forecast['tts'])
+        # A five-minute hold on a late deco stop should reduce remaining TTS.
+        stop=next(row for row in result['points'] if row['phase']=='deco' and row['depth']==3 and row['stopElapsed']>=1)
+        request=dict(settings=result['settings'],gases=result['gases'],point=stop)
+        forecast=p.point_metrics(request)['projection']
+        self.assertIsNotNone(stop['gfAnchor'])
+        self.assertGreater(stop['gfAnchor'],3)
+        self.assertLess(forecast['deltaPlus5'],0)
+        self.assertEqual(stop['gfMode'],'low')
+
+    def test_plus_five_invalid_state_is_unavailable_not_zero(self):
+        result=p.visualize(profile())
+        point=dict(result['points'][-1],depth=1)
+        request=dict(settings=result['settings'],gases=result['gases'],point=point)
+        response=p.point_metrics(request)
+        self.assertEqual(response['ndl']['minutes'],0)
+        self.assertIsNone(response['projection']['atPlus5'])
+        self.assertIsNone(response['projection']['deltaPlus5'])
+        self.assertTrue(response['projection']['reason'])
+        for change in (dict(tissues=[]),dict(gas='missing'),dict(gfAnchor=-1),dict(gfMode='unknown')):
+            with self.assertRaises(ValueError):p.point_metrics(dict(request,point=dict(point,**change)))
+
     def test_ndl_boundary_matches_no_stop_planning(self):
         for o2,he in [(21,0),(21,35)]:
             with self.subTest(o2=o2,he=he):

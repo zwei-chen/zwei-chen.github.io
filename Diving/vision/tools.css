@@ -66,3 +66,7 @@
 
 .segment-fields.waypoint-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:520px){.segment-fields.waypoint-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.segment-fields.waypoint-fields>label:last-child{grid-column:1/-1}}
+
+.point-projection-hint{font-size:10px;line-height:1.7;color:var(--muted);margin:8px 0 0}
+
+.cursor-info .projection-start{grid-column:1}

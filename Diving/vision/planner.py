@@ -84,7 +84,7 @@ def oxygen_rate(ppo2_bar):
     return 100/45, otu
 
 
-def validate(payload, *, mode='plan'):
+def validate_environment(payload):
     settings = dict(DEFAULTS)
     limits = dict(gfLow=(1,100),gfHigh=(1,100),surfacePressure=(.6,1.1),density=(.95,1.1),
                   ascentRate=(1,18),descentRate=(1,30),switchTime=(0,5),sacWork=(1,100),
@@ -107,6 +107,11 @@ def validate(payload, *, mode='plan'):
         if not gas['id'] or any(item['id']==gas['id'] for item in gases): raise ValueError('气体编号重复或缺失。')
         gas['fractions'] = ((100-gas['o2']-gas['he'])/100,gas['he']/100)
         gases.append(gas)
+    return settings,gases
+
+
+def validate(payload, *, mode='plan'):
+    settings,gases=validate_environment(payload)
     segments = []
     raw_segments = segment_timings(dict(payload,settings=settings,mode=mode))['segments']
     if not isinstance(raw_segments,list) or not 1 <= len(raw_segments) <= 24: raise ValueError('请设置 1–24 个潜水分段。')
@@ -134,6 +139,7 @@ class Simulation:
         self.anchor = None
         self.visualization = False
         self.gf_mode = 'high'
+        self.stop_elapsed = 0.0
         self.used = {gas['id']:0.0 for gas in gases}
         self.cns = self.otu = self.max_ppo2 = 0.0
         self.cns_known = True
@@ -153,7 +159,7 @@ class Simulation:
             self.warning_keys.add(key)
             self.warnings.append(dict(code=code,message=text))
 
-    def record(self, gas, phase, *, time=None, depth=None, tissues=None, used=None, cns=None, cns_known=None):
+    def record(self, gas, phase, *, time=None, depth=None, tissues=None, used=None, cns=None, cns_known=None, stop_elapsed=None):
         time=self.time if time is None else time
         if abs(time-round(time))<1e-8: time=float(round(time))
         depth=self.depth if depth is None else depth
@@ -164,6 +170,7 @@ class Simulation:
         ambient = self.pressure(depth)
         inspired_inert = (ambient-WATER_VAPOUR)*sum(gas['fractions'])
         self.points.append(dict(time=time,depth=depth,ambient=ambient,phase=phase,gas=gas['id'],
+            gfAnchor=self.anchor,gfMode=self.gf_mode,stopElapsed=self.stop_elapsed if stop_elapsed is None else stop_elapsed,
             ceiling=max(0,(ceiling(tissues,self.gf(depth))-self.surface)/self.metre),
             ceilingLow=max(0,(ceiling(tissues,self.settings['gfLow']/100)-self.surface)/self.metre),
             ceilingHigh=max(0,(ceiling(tissues,self.settings['gfHigh']/100)-self.surface)/self.metre),
@@ -184,6 +191,8 @@ class Simulation:
                 self.schedule.append(dict(phase=phase,fromDepth=self.depth,depth=self.depth,duration=0,runtime=self.time,gas=gas['id'],decompression=self.anchor is not None))
             return
         if self.time+duration > 1080: raise ValueError('模拟超过 1080 分钟，请缩短潜水时长或调整参数。')
+        if phase!='deco': self.stop_elapsed=0.0
+        start_stop_elapsed=self.stop_elapsed
         start_depth, start_time = self.depth,self.time
         manual_ascent = phase=='segment' and depth < start_depth
         previous_mode = self.gf_mode
@@ -208,7 +217,8 @@ class Simulation:
                 minute_used=dict(self.used)
                 minute_used[gas['id']]+=rmv*(p0+minute_pressure)/2*elapsed
                 self.record(gas,phase,time=minute,depth=minute_depth,tissues=minute_tissues,used=minute_used,
-                            cns=self.cns+(cns or 0)*elapsed,cns_known=self.cns_known and cns is not None)
+                            cns=self.cns+(cns or 0)*elapsed,cns_known=self.cns_known and cns is not None,
+                            stop_elapsed=start_stop_elapsed+minute-start_time if phase=='deco' else 0)
             self.tissues = load_tissues(self.tissues,p0,p1,dt,gas['fractions'])
             self.used[gas['id']] += rmv*(p0+p1)/2*dt
             self.max_ppo2 = max(self.max_ppo2,max(p0,p1)*gas['o2']/100)
@@ -221,6 +231,7 @@ class Simulation:
                 self.warn('hypoxia',f"{gas['name']} 在部分深度的氧分压低于 0.16 bar。",'hypoxia-'+gas['id'])
             self.depth = target
             self.time = start_time+dt*(i+1)
+            self.stop_elapsed=start_stop_elapsed+dt*(i+1) if phase=='deco' else 0
             if phase=='segment' and p1+1e-6 < ceiling(self.tissues,self.gf(target)):
                 if self.visualization: self.warn('ceiling','设定分段越过了 GF High 的减压上限；本页仅展示该剖面，不自动修正上升。')
                 else: raise ValueError('手动分段穿越了当前 GF 的减压上限。请在更深处结束分段，让程序自动生成上升计划。')
@@ -271,7 +282,7 @@ class Simulation:
                 if candidate['enabled'] and candidate['o2']>gas['o2'] and candidate['switchDepth']<self.settings['lastStop']:
                     self.warn('switch',f"{candidate['name']} 的切换深度浅于末站 {self.settings['lastStop']:g} m，自动减压不使用该换气点。",'switch-'+candidate['id'])
 
-    def ascend(self, gas):
+    def ascend(self, gas, stop_credit=0):
         # A no-stop ascent is assessed at GF High before searching the GF Low anchor.
         self.refresh_ascent_mode(gas)
         safety_pending = self.settings['safetyStop'] > 0 and self.depth >= 5 and self.gf_mode=='high'
@@ -299,11 +310,12 @@ class Simulation:
                 self.anchor=self.depth
             # Once decompression starts, stop for at least one minute at each
             # station. Gas-switch dwell at the same depth counts toward it.
-            if self.anchor is not None and switch_dwell < 1:
-                self.advance(self.depth,1-switch_dwell,gas,'deco')
+            if self.anchor is not None and switch_dwell+stop_credit < 1:
+                self.advance(self.depth,1-switch_dwell-stop_credit,gas,'deco')
             while not self.can_ascend(target,gas):
                 self.advance(self.depth,1,gas,'deco')
             self.advance(target,(self.depth-target)/self.settings['ascentRate'],gas,'ascent')
+            stop_credit=0
         return gas
 
 
@@ -339,6 +351,57 @@ def ndl(payload):
         if elapsed<99:
             probe.tissues=load_tissues(probe.tissues,ambient,ambient,1,gas['fractions'])
     return dict(minutes=99,capped=True,ascentRate=settings['ascentRate'])
+
+
+class ProjectionSimulation(Simulation):
+    """Use the same ascent solver without collecting unused chart snapshots."""
+    def record(self, *args, **kwargs):
+        pass
+
+
+def point_metrics(payload):
+    """NDL and independent current/+5 ascent projections from a tissue snapshot.
+
+    The five-minute delay loads tissues on the current gas. Each subsequent
+    ascent follows the configured enabled gases and the existing GF anchor.
+    Returned TTS excludes that delay. No source profile or tissue is modified.
+    """
+    settings,gases=validate_environment(payload)
+    point=payload.get('point',{})
+    depth=number(point.get('depth'),'depth',0,150)
+    rows=point.get('tissues',[])
+    if not isinstance(rows,list) or len(rows)!=16 or any(not isinstance(row,(list,tuple)) or len(row)<2 for row in rows):
+        raise ValueError('Projection requires 16 tissue compartments.')
+    tissues=[(number(row[0],'N2',0,100),number(row[1],'He',0,100)) for row in rows]
+    gas=next((g for g in gases if g['id']==point.get('gas') and g['enabled']),None)
+    if gas is None: raise ValueError('Projection requires an enabled current gas.')
+    anchor=point.get('gfAnchor')
+    if anchor is not None: anchor=number(anchor,'GF anchor',.000001,150)
+    mode=point.get('gfMode','high')
+    if mode not in ('low','high'): raise ValueError('Invalid GF ascent mode.')
+    stop_credit=number(point.get('stopElapsed',0),'Elapsed stop time',0,1080)
+    remaining=ndl(dict(settings=settings,point=point,gas=gas))
+    ambient=settings['surfacePressure']+depth*settings['density']*.0980665
+    values=[]
+    errors=[]
+    for delay in (0,5):
+        probe=ProjectionSimulation(settings,gases)
+        probe.depth=depth
+        probe.tissues=list(tissues) if delay==0 else load_tissues(tissues,ambient,ambient,delay,gas['fractions'])
+        probe.anchor=anchor
+        probe.gf_mode=mode
+        try:
+            # At the surface there is no remaining ascent, even if tissues are loaded.
+            if depth>0:
+                probe.ascend(gas,stop_credit=stop_credit+delay if anchor is not None else 0)
+            values.append(probe.time)
+        except ValueError as error:
+            values.append(None)
+            errors.append(str(error))
+    current,future=values
+    return dict(ndl=remaining,projection=dict(tts=current,atPlus5=future,
+        deltaPlus5=future-current if current is not None and future is not None else None,
+        reason=' '.join(dict.fromkeys(errors))))
 
 
 def gas_details(settings, gases):
@@ -679,6 +742,7 @@ def handle_json(request):
         elif action=='visualize': result=visualize(payload)
         elif action=='segments': result=segment_timings(payload)
         elif action=='ndl': result=ndl(payload)
+        elif action=='point_metrics': result=point_metrics(payload)
         elif action=='blend': result=blend(payload)
         elif action=='sac': result=sac(payload)
         elif action=='environment':
@@ -687,6 +751,7 @@ def handle_json(request):
         else: raise ValueError('未知计算请求。')
         for warning in result.get('warnings',[]): warning['message']=localize(warning['message'],lang)
         if 'reason' in result: result['reason']=localize(result['reason'],lang)
+        if 'projection' in result: result['projection']['reason']=localize(result['projection']['reason'],lang)
         return json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False)
     except (ValueError,TypeError,KeyError) as error:
         return json.dumps(dict(ok=False,error=localize(str(error),lang)),ensure_ascii=False)

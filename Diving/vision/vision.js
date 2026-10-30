@@ -8,8 +8,8 @@ const storageKey=visual?'dive-vision-profile-v1':'dive-vision-plan-v1';
 const DEFAULT_RATES={descent:18,ascent:10};
 const sample=()=>({useDefaultRates:true,settings:{...defaults},gases:[{id:'air',name:'Air',o2:21,he:0,size:11,pressure:200,switchDepth:0,enabled:true},...visual?[]:[{id:'ean50',name:'EAN50',o2:50,he:0,size:6,pressure:200,switchDepth:21,enabled:true}]],segments:[{depth:30,rate:DEFAULT_RATES.descent,gas:'air',kind:'descent'},{depth:30,duration:20,gas:'air',kind:'hold'},...visual?[{depth:5,rate:DEFAULT_RATES.ascent,gas:'air',kind:'ascent'},{depth:5,duration:3,gas:'air',kind:'hold'},{depth:0,rate:DEFAULT_RATES.ascent,gas:'air',kind:'ascent'}]:[]]});
 let state=sample(),result=null,revision=0,busy=false,playTimer=null,timingTimer=null,timingRequest=0;
-let selectedPoint=-1,ndlTimer=null,ndlBusy=false,ndlPending=null;
-const ndlCache=new Map();
+let selectedPoint=-1,pointMetricsTimer=null,pointMetricsBusy=false,pointMetricsPending=null;
+const pointMetricsCache=new Map();
 try{const saved=JSON.parse(localStorage.getItem(storageKey));if(saved&&saved.settings&&Array.isArray(saved.gases)&&saved.gases.length>0&&saved.gases.length<=8&&Array.isArray(saved.segments)&&saved.segments.length>0&&saved.segments.length<=24)state=saved;}catch{}
 let pressureView=false;
 const gfChart=createGFPressureChart($('#gf-pressure-chart'),$('#gf-pressure-legend'),$('#gf-pressure-anchor'));
@@ -172,9 +172,10 @@ function renderResult(){const s=result.summary;renderGasInfo();renderTimings(res
   renderTimeline();charts.setData(result);gfChart.setData(result);selectPoint(result.minuteIndices.at(-1));
 }
 function clearPointInfo(){
-  selectedPoint=-1;clearTimeout(ndlTimer);ndlPending=null;ndlCache.clear();
+  selectedPoint=-1;clearTimeout(pointMetricsTimer);pointMetricsPending=null;pointMetricsCache.clear();
   document.querySelectorAll('#cursor-info dd').forEach(x=>{x.textContent='—';x.classList.remove('low');x.removeAttribute('title');x.removeAttribute('aria-busy');});
   $('#point-info-hint').textContent=t('计算后移动时间游标，查看该时刻的参数。','Calculate, then move the timeline to inspect this moment.');
+  $('#point-projection-hint').textContent=projectionHint();
 }
 function elapsedTime(minutes){const seconds=Math.round(minutes*60);return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;}
 function renderPointInfo(p,gas){
@@ -194,27 +195,39 @@ function renderPointInfo(p,gas){
     `NDL：按当前气体、GF High ${f(result.settings.gfHigh)}% 和 ${f(result.settings.ascentRate)} m/min 连续上升估算，不计换气；≥99 min 表示达到显示上限。`,
     `NDL: current gas, GF High ${f(result.settings.gfHigh)}% and a continuous ascent at ${f(result.settings.ascentRate)} m/min, without gas switches; ≥99 min is the display limit.`);
 }
-function showNDL(data){const output=$('#cursor-ndl');output.textContent=`${data.capped?'≥':''}${data.minutes} min`;output.removeAttribute('aria-busy');output.title=$('#point-info-hint').textContent;}
-function requestNDL(index){
-  clearTimeout(ndlTimer);
-  if(ndlCache.has(index)){ndlPending=null;showNDL(ndlCache.get(index));return;}
-  $('#cursor-ndl').textContent='…';$('#cursor-ndl').setAttribute('aria-busy','true');$('#cursor-ndl').removeAttribute('title');
-  ndlPending={snapshot:result,index};ndlTimer=setTimeout(calculateNDL,100);
+function projectionHint(){return t('@+5：原深度再停留 5 分钟后的预计上升总时间，不含这 5 分钟。Δ+5 = @+5 − 当前 TTS。按所设 GF、上升速度及已启用减压气体预测，不校验剩余气量；水面为 0。','@+5: time to surface after 5 more minutes at the current depth, excluding those 5 minutes. Δ+5 = @+5 − current TTS. Uses configured GF, ascent rate and enabled deco gases, without checking remaining gas; surface values are 0.');}
+function showPointMetrics(data){
+  const ndlOutput=$('#cursor-ndl'),projection=data.projection;
+  ndlOutput.textContent=`${data.ndl.capped?'≥':''}${data.ndl.minutes} min`;ndlOutput.removeAttribute('aria-busy');ndlOutput.title=$('#point-info-hint').textContent;
+  for(const [id,value,signed] of [['at-plus-five',projection.atPlus5,false],['delta-plus-five',projection.deltaPlus5,true]]){
+    const output=$(`#cursor-${id}`),rounded=value===null?null:Math.round(value*10)/10;
+    output.textContent=rounded===null?'—':`${signed&&rounded>0?'+':''}${f(rounded,1)} min`;
+    output.removeAttribute('aria-busy');
+    output.title=value===null?projection.reason:projectionHint();
+  }
+  $('#point-projection-hint').textContent=projectionHint()+' '+(projection.tts===null?'':t(`当前 TTS：${f(projection.tts,1)} min。`,`Current TTS: ${f(projection.tts,1)} min.`))+(projection.reason?' '+t('预测不可用：','Projection unavailable: ')+projection.reason:'');
 }
-async function calculateNDL(){
-  if(ndlBusy||!ndlPending)return;
-  const {snapshot,index}=ndlPending;ndlPending=null;
+function requestPointMetrics(index){
+  clearTimeout(pointMetricsTimer);
+  $('#point-projection-hint').textContent=projectionHint();
+  if(pointMetricsCache.has(index)){pointMetricsPending=null;showPointMetrics(pointMetricsCache.get(index));return;}
+  for(const id of ['ndl','at-plus-five','delta-plus-five']){const output=$(`#cursor-${id}`);output.textContent='…';output.setAttribute('aria-busy','true');output.removeAttribute('title');}
+  pointMetricsPending={snapshot:result,index};pointMetricsTimer=setTimeout(calculatePointMetrics,100);
+}
+async function calculatePointMetrics(){
+  if(pointMetricsBusy||!pointMetricsPending)return;
+  const {snapshot,index}=pointMetricsPending;pointMetricsPending=null;
   if(snapshot!==result)return;
-  ndlBusy=true;
+  pointMetricsBusy=true;
   try{
-    const p=snapshot.points[index],gas=snapshot.gases.find(g=>g.id===p.gas);
-    const data=await engine.call('ndl',{settings:snapshot.settings,point:{depth:p.depth,tissues:p.tissues},gas:{o2:gas.o2,he:gas.he}});
-    if(result===snapshot){ndlCache.set(index,data);if(selectedPoint===index)showNDL(data);}
-  }catch(e){if(result===snapshot&&selectedPoint===index){$('#cursor-ndl').textContent='—';$('#cursor-ndl').title=e.message;$('#cursor-ndl').removeAttribute('aria-busy');}}
-  finally{ndlBusy=false;if(ndlPending)calculateNDL();}
+    const p=snapshot.points[index];
+    const data=await engine.call('point_metrics',{settings:snapshot.settings,point:{depth:p.depth,tissues:p.tissues,gas:p.gas,gfAnchor:p.gfAnchor,gfMode:p.gfMode,stopElapsed:p.stopElapsed},gases:snapshot.gases});
+    if(result===snapshot){pointMetricsCache.set(index,data);if(selectedPoint===index)showPointMetrics(data);}
+  }catch(e){if(result===snapshot&&selectedPoint===index){for(const id of ['ndl','at-plus-five','delta-plus-five']){const output=$(`#cursor-${id}`);output.textContent='—';output.title=e.message;output.removeAttribute('aria-busy');}$('#point-projection-hint').textContent=projectionHint()+' '+e.message;}}
+  finally{pointMetricsBusy=false;if(pointMetricsPending)calculatePointMetrics();}
 }
 function selectPoint(index){if(!result)return;const p=result.points[index],gas=result.gases.find(g=>g.id===p.gas);$('#time-cursor').value=String(p.time);$('#time-cursor').dataset.position=String(result.minuteIndices.indexOf(index));$('#time-cursor').setAttribute('aria-valuetext',`${f(p.time,2)} ${t('分钟','minutes')}`);$('#cursor-time').textContent=`${f(p.time,2)} / ${f(result.summary.runtime,2)} min`;
-  selectedPoint=index;renderPointInfo(p,gas);requestNDL(index);
+  selectedPoint=index;renderPointInfo(p,gas);requestPointMetrics(index);
   const leading=p.gf99>0?p.tissueGF.indexOf(Math.max(...p.tissueGF)):-1;
   $('#compartment-grid').innerHTML=p.tissueGF.map((value,i)=>`<div class="compartment ${i===leading?'leading':''} ${value>100?'over':''}"><span>${String(i+1).padStart(2,'0')}${i===leading?' ●':''}</span><strong>${f(value)}<small>%</small></strong></div>`).join('');charts.select(index);
 }

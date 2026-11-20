@@ -5,7 +5,7 @@ export const COLORS = ['#e58b25', '#c746c6', '#30a4ae', '#c66041', '#788d35', '#
 // These fixed assignments keep colors stable as layers or gases are toggled.
 const PROFILE_COLORS = {
   depth: '#168fca', gf99: '#855ad6',
-  ceilingHigh: '#d64d70', ceilingLow: '#a38a13', mValue: '#5364bb'
+  ceilingHigh: '#d64d70', ceilingLow: '#a38a13', mValue: '#5364bb', targetGF: '#148775'
 };
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 export const format = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toLocaleString(lang==='en'?'en-US':'zh-CN', {maximumFractionDigits:digits}) : '—';
@@ -47,14 +47,20 @@ export function createCharts(profile, tissue, legend, onSelect) {
     if(mode==='depth'){
       maximum=Math.max(10,Math.ceil(result.summary.maxDepth/5)*5);invert=true;unit='m';title=t('深度','Depth');color=PROFILE_COLORS.depth;
       series=[{color,label:t('潜水深度','Depth'),values:points.map(p=>p.depth),fill:true}];
-      if(result.mode==='visualize'){
-        series.push({color:PROFILE_COLORS.ceilingHigh,label:t('GF High 上限','GF High ceiling'),values:points.map(p=>p.ceilingHigh),dash:true},{color:PROFILE_COLORS.ceilingLow,label:t('GF Low 上限','GF Low ceiling'),values:points.map(p=>p.ceilingLow),dash:true});
+      if(result.mode==='visualize'||result.settings.ascentMode==='constant'){
+        series.push(
+          {color:PROFILE_COLORS.ceilingHigh,label:t('GF High 上限','GF High ceiling')+' ('+format(result.settings.gfHigh)+'%)',values:points.map(p=>p.ceilingHigh),dash:true},
+          {color:PROFILE_COLORS.ceilingLow,label:t('GF Low 上限','GF Low ceiling')+' ('+format(result.settings.gfLow)+'%)',values:points.map(p=>p.ceilingLow),dash:true}
+        );
         maximum=Math.max(maximum,Math.ceil(Math.max(...points.map(p=>p.ceilingLow))/5)*5);
       }else series.push({color:PROFILE_COLORS.ceilingHigh,label:t('减压上限','Ceiling'),values:points.map(p=>p.ceiling),dash:true});
     }else if(mode==='gf99'){
       maximum=Math.max(100,Math.ceil(result.summary.maxGF99/20)*20);unit='%';title='GF99';color=PROFILE_COLORS.gf99;
       series=[{color,label:'GF99',values:points.map(p=>p.gf99)},{color:PROFILE_COLORS.mValue,label:t('M 值','M-value'),values:points.map(()=>100),dash:true}];
 
+      if(result.settings.ascentMode==='constant'||result.settings.ascentMode==='variable'){
+        series.push({color:PROFILE_COLORS.targetGF,label:t('目标 GF','Target GF'),values:points.map(p=>p.gf),dash:true});
+      }
     }
     return {mode,minimum,maximum,series,unit,title,color,invert};
   }

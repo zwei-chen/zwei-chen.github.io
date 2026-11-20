@@ -70,6 +70,6 @@ diving:
   title_zh: "Diving"
   anchor: "diving"
   content: |
-    - [潜水可视化](/Diving/vision/) · [潜水计划](/Diving/plan/) · [潜水混气](/Diving/blend/) · [SCR 小工具](/Diving/scr/)
+    - [潜水可视化](/Diving/vision/) · [OC潜水计划](/Diving/plan/) · [CC潜水计划](/Diving/cc-plan/) · [恒定 GF 计划](/Diving/constant-gf/) · [潜水混气](/Diving/blend/) · [SCR 小工具](/Diving/scr/)
   content_en: |
-    - [Visualization](/en/Diving/vision/) · [Dive planner](/en/Diving/plan/) · [Gas blending](/en/Diving/blend/) · [SCR calculator](/en/Diving/scr/)
+    - [Visualization](/en/Diving/vision/) · [OC dive planner](/en/Diving/plan/) · [CC dive planner](/en/Diving/cc-plan/) · [Constant GF planner](/en/Diving/constant-gf/) · [Gas blending](/en/Diving/blend/) · [SCR calculator](/en/Diving/scr/)

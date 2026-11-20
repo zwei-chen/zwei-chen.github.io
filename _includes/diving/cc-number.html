@@ -1,0 +1,3 @@
+<label>{% if page.lang == 'en' %}{{ include.en }}{% else %}{{ include.zh }}{% endif %}{% if include.unit %} <span>{{ include.unit }}</span>{% endif %}
+  <input type="number" name="{{ include.name }}" min="{{ include.min }}" max="{{ include.max }}" step="{{ include.step | default: 'any' }}" value="{{ include.value }}"{% unless include.optional %} required{% endunless %}>
+</label>

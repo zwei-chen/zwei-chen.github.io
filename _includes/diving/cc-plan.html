@@ -1,0 +1,59 @@
+{% assign en = false %}{% if page.lang == 'en' %}{% assign en = true %}{% endif %}
+<main>
+  <section class="page-heading">
+    <div><h1>{% if en %}CC dive planner{% else %}CC潜水计划{% endif %}</h1>
+      <p>{% if en %}Compare a closed-circuit dive with an open-circuit bailout from the same tissue loading.{% else %}比较全程闭式循环与中途切换开放式应急气源的上升剖面。{% endif %}</p></div>
+    <div class="model-badge">Bühlmann ZHL-16C / GF</div>
+  </section>
+  <div class="workspace">
+    <form id="cc-form" class="controls" novalidate>
+      <section class="panel">
+        <div class="section-heading"><h2>{% if en %}CC main plan{% else %}CC 主计划{% endif %}</h2></div>
+        <div class="field-grid">
+          {% include diving/cc-number.html name="depth" zh="目标深度" en="Target depth" unit="m" min=".1" max="150" value="40" %}
+          {% include diving/cc-number.html name="duration" zh="底部停留时长" en="Bottom hold" unit="min" min="0" max="180" value="25" %}
+          {% include diving/cc-number.html name="diluentO2" zh="稀释气 O₂" en="Diluent O₂" unit="%" min="1" max="99" value="21" %}
+          {% include diving/cc-number.html name="diluentHe" zh="稀释气 He" en="Diluent He" unit="%" min="0" max="99" value="0" %}
+          {% include diving/cc-number.html name="setpoint" zh="全程氧分压设定点" en="Loop setpoint" unit="bar" min=".4" max="1.6" value="1.3" %}
+        </div>
+        <p class="hint">{% if en %}The model assumes a single setpoint and limits loop oxygen to the available dry ambient pressure near the surface.{% else %}模拟全程使用一个设定点。近水面时，回路氧分压最高取当地环境压力扣除水汽压后的值。{% endif %}</p>
+        <div class="field-grid">
+          {% include diving/cc-number.html name="gfLow" zh="GF Low" en="GF Low" unit="%" min="1" max="100" value="50" %}
+          {% include diving/cc-number.html name="gfHigh" zh="GF High" en="GF High" unit="%" min="1" max="100" value="70" %}
+          {% include diving/cc-number.html name="descentRate" zh="下降速度" en="Descent rate" unit="m/min" min="1" max="30" value="18" %}
+          {% include diving/cc-number.html name="ascentRate" zh="上升速度" en="Ascent rate" unit="m/min" min="1" max="18" value="10" %}
+        </div>
+        <details class="advanced"><summary>{% if en %}Environment and advanced settings{% else %}环境与高级设置{% endif %}</summary>
+          <div class="field-grid">
+            {% include diving/cc-number.html name="surfacePressure" zh="水面气压" en="Surface pressure" unit="bar" min=".6" max="1.1" value="1.01325" %}
+            {% include diving/cc-number.html name="density" zh="水体密度" en="Water density" unit="kg/L" min=".95" max="1.1" value="1.03" %}
+            <label>{% if en %}Last stop{% else %}末站深度{% endif %}<span>m</span><select name="lastStop"><option>3</option><option>6</option></select></label>
+            {% include diving/cc-number.html name="ppo2Work" zh="OC 工作氧分压上限" en="OC working PPO₂ limit" unit="bar" min=".5" max="1.6" value="1.4" %}
+            {% include diving/cc-number.html name="ppo2Deco" zh="OC 减压氧分压上限" en="OC deco PPO₂ limit" unit="bar" min=".5" max="1.6" value="1.6" %}
+          </div>
+        </details>
+      </section>
+      <section class="panel">
+        <div class="section-heading"><h2>OC bailout</h2></div>
+        <div class="field-grid">
+          {% include diving/cc-number.html name="bailoutTime" zh="切换时刻" en="Bailout runtime" unit="min" min="0" max="1080" optional=true %}
+          {% include diving/cc-number.html name="bailoutSCR" zh="应急 SCR" en="Bailout SCR" unit="L/min" min="1" max="150" value="25" %}
+          {% include diving/cc-number.html name="reserve" zh="每瓶预留压力" en="Reserve per cylinder" unit="bar" min="0" max="150" value="50" %}
+        </div>
+        <p class="hint">{% if en %}Leave the time blank to bail out at the end of the bottom hold, or enter minutes from the start of descent. SCR applies throughout the OC ascent.{% else %}切换时刻留空表示在底部停留结束时切换，也可填写从开始下潜算起的分钟数。整段 OC 上升使用此应急 SCR。{% endif %}</p>
+        <h3>{% if en %}Bailout cylinders{% else %}应急气瓶{% endif %}</h3>
+        <div class="item-list" id="cc-cylinders"></div>
+        <div class="preset-buttons"><button type="button" data-mix="air">＋ {% if en %}Air{% else %}空气{% endif %}</button><button type="button" data-mix="trimix">＋ Trimix</button><button type="button" data-mix="ean50">＋ EAN50</button><button type="button" data-mix="oxygen">＋ O₂</button></div>
+        <p class="hint">{% if en %}An empty switch depth uses the OC oxygen limit. Gas volume is calculated per diver.{% else %}切换深度留空时按 OC 氧分压上限计算。气量按一名潜水员估算。{% endif %}</p>
+      </section>
+      <div class="calculate-area"><button id="calculate-cc" class="button primary" disabled>{% if en %}Calculate CC and bailout plans{% else %}计算 CC 主计划与 OC bailout{% endif %}</button>
+        <p id="engine-status" role="status"></p><button type="button" id="retry-engine" class="text-button" hidden>{% if en %}Reload engine{% else %}重新加载计算环境{% endif %}</button><p id="cc-error" class="form-error" role="alert" hidden></p></div>
+    </form>
+    <div class="results-column">
+      <section class="panel"><div class="section-heading"><h2>{% if en %}Dive profiles{% else %}潜水剖面{% endif %}</h2></div>
+        <div id="cc-profile"><p class="hint">{% if en %}Calculate to view both profiles.{% else %}计算后显示两条剖面。{% endif %}</p></div></section>
+      <section class="panel" id="cc-main-result" hidden></section>
+      <section class="panel" id="cc-bailout-result" hidden></section>
+    </div>
+  </div>
+</main>

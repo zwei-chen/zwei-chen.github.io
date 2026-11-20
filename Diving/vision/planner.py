@@ -1,11 +1,11 @@
-"""Educational open-circuit, single-dive ZHL-16C / GF simulation.
+"""Educational single-dive ZHL-16C / GF simulation.
 
 Equations and coefficient provenance: see MODEL.md. All planning arithmetic is
 performed here; the browser only renders the returned data. Not a dive computer.
 """
 import json
 import math
-from itertools import combinations
+from itertools import combinations, groupby
 
 WATER_VAPOUR = 0.0627
 N2_HALF = (4,8,12.5,18.5,27,38.3,54.3,77,109,146,187,239,305,390,498,635)
@@ -84,6 +84,73 @@ def oxygen_rate(ppo2_bar):
     return 100/45, otu
 
 
+def ascent_rate(settings, oxygen):
+    if oxygen >= 50:
+        return settings.get('decoAscentRate', settings['ascentRate'])
+    return settings['ascentRate']
+
+
+def segment_rate(payload, kind, gas_id):
+    settings = payload.get('settings', {})
+    key = kind + 'Rate'
+    rate = settings.get(key, DEFAULTS[key])
+    if payload.get('mode') != 'plan':
+        rate = DEFAULTS[key]
+    elif kind == 'ascent' and 'decoAscentRate' in settings:
+        for gas in payload.get('gases', []):
+            if str(gas.get('id')) == gas_id and number(gas.get('o2'), 'O2', 1, 100) >= 50:
+                rate = settings['decoAscentRate']
+                break
+    return number(rate, key, 1, 30 if kind == 'descent' else 18)
+
+
+# Published working-depth ceilings in metres. The model also checks local
+# ambient pressure and dry gas density before admitting any candidate.
+# Sources: Rich Walker's GUE bottom-gas table and PATD Standards, Standardgase.
+STANDARD_BOTTOM_GASES = {
+    (32, 0): 30, (30, 30): 30, (21, 35): 45, (18, 45): 60,
+    (15, 55): 75, (12, 65): 92, (10, 70): 90, (10, 80): 100,
+}
+
+
+def generated_inventory(settings, bottom):
+    """Choose standard mixes within the published depths and model limits."""
+    depth = number(bottom.get('depth'), '底部深度', .1, 150)
+    surface = settings['surfacePressure']
+    metre = settings['density'] * .0980665
+    ambient = surface + depth * metre
+
+    def max_work_depth(mix):
+        o2, he = mix
+        # Ideal dry gas at 0 °C, normalized from 1 atm to bar.
+        density = (1.429*o2 + .1785*he + 1.2506*(100-o2-he)) / (100*1.01325)
+        pressure = min(settings['ppo2Work']*100/o2, 5.2/density)
+        return min(STANDARD_BOTTOM_GASES[mix], (pressure-surface)/metre)
+
+    def cylinder(key, mix, volume, switch=0):
+        o2, he = mix
+        name = f'Tx{o2}/{he}' if he else ('Air' if o2==21 else 'O₂' if o2==100 else f'EAN{o2}')
+        return dict(id=key,name=name,o2=o2,he=he,size=volume,pressure=200,switchDepth=switch,enabled=True)
+
+    choices = [mix for mix in STANDARD_BOTTOM_GASES if depth<=max_work_depth(mix) and ambient*mix[0]/100>=.16]
+    if not choices:
+        raise ValueError('标准气表中没有同时满足目标深度、工作氧分压和气体密度上限的底气。请核对参数或录入可用气体。')
+    bottom_mix = max(choices, key=lambda mix: (mix[0], -mix[1]))
+    gases = [cylinder('auto-bottom', bottom_mix, 24)]
+    if surface*bottom_mix[0]/100 < .16:
+        travel_mixes = [mix for mix in STANDARD_BOTTOM_GASES if .16 <= surface*mix[0]/100 <= settings['ppo2Work']
+                        and (surface+min(depth,max_work_depth(mix))*metre)*bottom_mix[0]/100 >= .16]
+        if not travel_mixes:
+            raise ValueError('没有能与底气交接的已启用旅行气，请检查气体和切换深度。')
+        travel = max(travel_mixes, key=max_work_depth)
+        gases.append(cylinder('auto-travel', travel, 11, min(depth, max_work_depth(travel))))
+    for o2, nominal in [(50,21),(100,6)]:
+        switch = min(nominal,(settings['ppo2Deco']*100/o2-surface)/metre)
+        if 0 < switch < depth and o2 > bottom_mix[0]:
+            gases.append(cylinder(f'auto-deco-{o2}', (o2,0), 11, switch))
+    return gases
+
+
 def validate_environment(payload):
     settings = dict(DEFAULTS)
     limits = dict(gfLow=(1,100),gfHigh=(1,100),surfacePressure=(.6,1.1),density=(.95,1.1),
@@ -93,16 +160,29 @@ def validate_environment(payload):
     raw = payload.get('settings', {})
     for key, (low, high) in limits.items():
         settings[key] = number(raw.get(key,settings[key]), key, low, high)
+    settings['decoAscentRate'] = number(raw.get('decoAscentRate', settings['ascentRate']), 'decoAscentRate', 1, 18)
+    settings['ascentMode'] = raw.get('ascentMode', 'staged')
+    if settings['ascentMode'] not in ('staged', 'variable', 'constant'):
+        raise ValueError('Invalid ascent mode.')
+    if settings['ascentMode'] == 'constant':
+        settings['targetGF'] = number(raw.get('targetGF', 70), 'GF', 1, 100)
     if settings['gfLow'] > settings['gfHigh']: raise ValueError('GF Low 不能大于 GF High。')
     if settings['lastStop'] not in (3,6): raise ValueError('末站深度只能为 3 m 或 6 m。')
     if settings['ppo2Work'] > settings['ppo2Deco']: raise ValueError('底部氧分压上限不能大于减压氧分压上限。')
     gases = []
     raw_gases = payload.get('gases', [])
+    if raw_gases == [] and payload.get('profileMode') == 'bottom':
+        raw_gases = generated_inventory(settings, payload.get('bottom', {}))
     if not isinstance(raw_gases,list) or not 1 <= len(raw_gases) <= 8: raise ValueError('请设置 1–8 种气体。')
     for row in raw_gases:
         gas = dict(id=str(row.get('id',''))[:40],name=str(row.get('name','Gas'))[:40],enabled=row.get('enabled',True) is True)
+        if row.get('travelGas') is True:
+            gas['travelGas'] = True
         for key,low,high in [('o2',1,100),('he',0,99),('size',1,50),('pressure',1,350),('switchDepth',0,150)]:
-            gas[key] = number(row.get(key,0), gas['name']+' '+key,low,high)
+            value = row.get(key,0)
+            if key == 'switchDepth' and value in ('', None):
+                value = 0
+            gas[key] = number(value, gas['name']+' '+key,low,high)
         if gas['o2']+gas['he'] > 100: raise ValueError(f"{gas['name']} 的氧气与氦气比例之和不能超过 100%。")
         if not gas['id'] or any(item['id']==gas['id'] for item in gases): raise ValueError('气体编号重复或缺失。')
         gas['fractions'] = ((100-gas['o2']-gas['he'])/100,gas['he']/100)
@@ -112,6 +192,21 @@ def validate_environment(payload):
 
 def validate(payload, *, mode='plan'):
     settings,gases=validate_environment(payload)
+    if mode == 'plan' and payload.get('profileMode') == 'bottom':
+        bottom = payload.get('bottom', {})
+        depth = number(bottom.get('depth'), '底部深度', .1, 150)
+        hold = number(bottom.get('duration'), '底部停留时长', 0, 180)
+        ambient = settings['surfacePressure'] + depth * settings['density'] * .0980665
+        choices = [g for g in gases if g['enabled'] and .16 <= ambient*g['o2']/100 <= settings['ppo2Work']+1e-8
+                   and (not g['switchDepth'] or depth <= g['switchDepth']+1e-8)]
+        if not choices:
+            raise ValueError('没有适合目标深度的已启用底气，请检查氧分压与切换深度。')
+        gas = (max(choices, key=lambda g: (g['o2'], g['he'])) if payload.get('gases')
+               else gases[0])  # generated_inventory places the screened bottom mix first
+        segments = [dict(depth=depth, duration=depth/settings['descentRate'], gas=gas['id'])]
+        if hold:
+            segments.append(dict(depth=depth, duration=hold, gas=gas['id']))
+        return settings, gases, segments
     segments = []
     raw_segments = segment_timings(dict(payload,settings=settings,mode=mode))['segments']
     if not isinstance(raw_segments,list) or not 1 <= len(raw_segments) <= 24: raise ValueError('请设置 1–24 个潜水分段。')
@@ -149,6 +244,8 @@ class Simulation:
     def pressure(self, depth): return self.surface+depth*self.metre
 
     def gf(self, depth):
+        if self.settings.get('ascentMode') == 'constant':
+            return self.settings['targetGF'] / 100
         low,high = self.settings['gfLow']/100,self.settings['gfHigh']/100
         if self.anchor is not None and self.anchor > 0: return high-(high-low)*min(1,max(0,depth/self.anchor))
         return low if self.gf_mode=='low' else high
@@ -184,7 +281,7 @@ class Simulation:
             tissues=[[n,h,a+ambient/b] for (n,h),(_,a,b) in zip(tissues,coefficients(tissues))],
             pressures={key:self.gases[key]['pressure']-volume/self.gases[key]['size'] for key,volume in used.items()}))
 
-    def advance(self, depth, duration, gas, phase):
+    def advance(self, depth, duration, gas, phase, *, sample_end=True, log_leg=True):
         if duration <= 1e-9:
             if phase=='switch':
                 self.record(gas,phase)
@@ -196,7 +293,7 @@ class Simulation:
         start_depth, start_time = self.depth,self.time
         manual_ascent = phase=='segment' and depth < start_depth
         previous_mode = self.gf_mode
-        if manual_ascent and not self.visualization and not self.can_ascend(0,gas): self.gf_mode='low'
+        if manual_ascent and not self.visualization and self.settings.get('ascentMode') != 'constant' and not self.can_ascend(0,gas): self.gf_mode='low'
         steps = max(1,math.ceil(duration*(60 if manual_ascent else 6)))
         dt = duration/steps
         limit = self.settings['ppo2Work'] if phase=='segment' else self.settings['ppo2Deco']
@@ -235,8 +332,11 @@ class Simulation:
             if phase=='segment' and p1+1e-6 < ceiling(self.tissues,self.gf(target)):
                 if self.visualization: self.warn('ceiling','设定分段越过了 GF High 的减压上限；本页仅展示该剖面，不自动修正上升。')
                 else: raise ValueError('手动分段穿越了当前 GF 的减压上限。请在更深处结束分段，让程序自动生成上升计划。')
-            if not manual_ascent or i%10==0 or i==steps-1 or abs(self.time-round(self.time))<1e-8: self.record(gas,phase)
+            if (sample_end and (not manual_ascent or i%10==0 or i==steps-1)) or abs(self.time-round(self.time))<1e-8:
+                self.record(gas,phase)
         self.gf_mode=previous_mode
+        if not log_leg:
+            return
         row = dict(phase=phase,fromDepth=start_depth,depth=depth,duration=duration,runtime=self.time,gas=gas['id'],decompression=phase=='deco' or (phase=='switch' and self.anchor is not None))
         previous = self.schedule[-1] if self.schedule else None
         if previous and previous['phase']==phase and previous['gas']==gas['id'] and phase in ('deco','ascent') and (phase=='ascent' or previous['depth']==depth):
@@ -245,24 +345,28 @@ class Simulation:
             previous['runtime']=self.time
         else: self.schedule.append(row)
 
+    def tissue_step(self, tissues, p0, p1, duration, gas):
+        return load_tissues(tissues, p0, p1, duration, gas['fractions'])
+
     def can_ascend(self, target, gas):
         # Require the next stop to be permitted by the departure tissues too;
         # this matches the published DecoTengu stop-release convention.
         if (self.anchor is not None or self.gf_mode=='low') and self.pressure(target)+1e-8 < ceiling(self.tissues,self.gf(target)):
             return False
-        duration = (self.depth-target)/self.settings['ascentRate']
+        duration = (self.depth-target)/ascent_rate(self.settings, gas['o2'])
         steps = max(1,math.ceil(duration*60))
         tissues = self.tissues
         depth = self.depth
         for i in range(steps):
             next_depth = self.depth+(target-self.depth)*(i+1)/steps
-            tissues = load_tissues(tissues,self.pressure(depth),self.pressure(next_depth),duration/steps,gas['fractions'])
+            tissues = self.tissue_step(tissues,self.pressure(depth),self.pressure(next_depth),duration/steps,gas)
             if self.pressure(next_depth)+1e-8 < ceiling(tissues,self.gf(next_depth)): return False
             depth = next_depth
         return True
 
-    def best_gas(self, current):
-        choices = [gas for gas in self.gases.values() if gas['enabled'] and gas['o2']>current['o2'] and self.depth<=gas['switchDepth']+1e-7 and .16<=self.pressure(self.depth)*gas['o2']/100<=self.settings['ppo2Deco']+1e-8]
+    def best_gas(self, current, depth=None):
+        depth = self.depth if depth is None else depth
+        choices = [gas for gas in self.gases.values() if gas['enabled'] and gas['o2']>current['o2'] and depth<=gas['switchDepth']+1e-7 and .16<=self.pressure(depth)*gas['o2']/100<=self.settings['ppo2Deco']+1e-8]
         return max(choices,key=lambda gas:gas['o2']) if choices else current
 
     def next_depth(self, gas):
@@ -279,10 +383,198 @@ class Simulation:
             if self.pressure(self.depth)+1e-8 < ceiling(self.tissues,self.settings['gfLow']/100):
                 raise ValueError('最后一段已浅于 GF Low 允许的首站深度。请在更深处结束手动分段。')
             for candidate in self.gases.values():
-                if candidate['enabled'] and candidate['o2']>gas['o2'] and candidate['switchDepth']<self.settings['lastStop']:
+                if candidate['enabled'] and not candidate.get('travelGas') and candidate['o2']>gas['o2'] and candidate['switchDepth']<self.settings['lastStop']:
                     self.warn('switch',f"{candidate['name']} 的切换深度浅于末站 {self.settings['lastStop']:g} m，自动减压不使用该换气点。",'switch-'+candidate['id'])
 
+    def follow_ceiling(self, target, gas, until=math.inf):
+        """Travel to target at the rate limit or along the moving GF ceiling.
+
+        Each linear substep lasts at most one second. Test the fastest endpoint
+        with the updated tissues. When constrained, bracket the admissible
+        endpoint between that depth and the present depth.
+        """
+        rate = ascent_rate(self.settings, gas['o2'])
+        while self.depth > target + 1e-9 and self.time < until - 1e-9:
+            p0 = self.pressure(self.depth)
+            def margin(depth, dt):
+                p1 = self.pressure(depth)
+                tissues = load_tissues(self.tissues, p0, p1, dt, gas['fractions'])
+                return p1 - ceiling(tissues, self.gf(depth))
+
+            # Align samples to the dive clock, including after fractional gas switches.
+            next_second = math.floor(self.time * 60 + 1e-7) + 1
+            dt = next_second / 60 - self.time
+            travel = min(dt, (self.depth - target) / rate)
+            depth = max(target, self.depth - rate * travel)
+            deficit = margin(depth, travel)
+            if deficit >= 0:
+                if travel > 1e-9:
+                    dt = travel
+            else:
+                # Near the surface or a station, allow the whole second for
+                # off-gassing even when the rate-limited trip is much shorter.
+                if travel < dt:
+                    deficit = margin(depth, dt)
+                    if deficit >= 0:
+                        # The moving ceiling reaches the boundary within this
+                        # second. Locate arrival in time as well as in depth.
+                        early, late = travel, dt
+                        while late - early > 1e-7:
+                            middle = (early + late)/2
+                            if margin(depth, middle) >= 0:
+                                late = middle
+                            else:
+                                early = middle
+                        dt = late
+                if deficit < 0:
+                    shallow, deep = depth, self.depth
+                    surplus = margin(deep, dt)
+                    if surplus < -1e-9:
+                        raise ValueError('在当前气体和深度无法保持目标 GF。请检查分段和气体设置。')
+                    # Interpolate the margin; keep the accepted (deep) side.
+                    for _ in range(20):
+                        if deep - shallow < 1e-5 or surplus <= 2e-8:
+                            break
+                        guess = shallow + (deep-shallow) * (-deficit)/(surplus-deficit)
+                        guess = min(deep, guess + 1e-7)
+                        if guess >= deep:
+                            guess = (shallow+deep)/2
+                        value = margin(guess, dt)
+                        if value >= 0:
+                            deep, surplus = guess, value
+                        else:
+                            shallow, deficit = guess, value
+                    depth = deep
+            at_target = depth <= target + 1e-9
+            self.advance(depth, dt, gas, 'gf_ascent', sample_end=at_target or next_second % 10 == 0, log_leg=False)
+
+    def switch_boundaries(self, gas, target):
+        depths = set()
+        for candidate in self.gases.values():
+            if candidate['enabled'] and candidate['o2'] > gas['o2']:
+                mod = (self.settings['ppo2Deco'] * 100/candidate['o2'] - self.surface)/self.metre
+                depth = min(candidate['switchDepth'], mod)
+                if target + 1e-7 < depth < self.depth - 1e-7:
+                    depths.add(depth)
+        return sorted(depths, reverse=True)
+
+    def log_gf_leg(self, start_time, start_depth, gas):
+        duration = self.time - start_time
+        self.schedule.append(dict(phase='gf_ascent', fromDepth=start_depth, depth=self.depth,
+            duration=duration, runtime=self.time, gas=gas['id'], decompression=False,
+            meanAscentRate=(start_depth-self.depth)/duration,
+            arrivalGF=surface_gf(self.tissues, self.pressure(self.depth)), targetGF=100*self.gf(self.depth)))
+
+    def ascend_on_gf(self, gas):
+        while self.depth > 1e-7:
+            chosen = self.best_gas(gas)
+            if chosen is not gas:
+                gas = chosen
+                self.advance(self.depth, 0, gas, 'switch')
+            boundaries = self.switch_boundaries(gas, 0)
+            target = boundaries[0] if boundaries else 0.
+            start_time, start_depth = self.time, self.depth
+            self.follow_ceiling(target, gas, math.floor(self.time + 1e-8) + 1)
+            self.log_gf_leg(start_time, start_depth, gas)
+        return gas
+
+    def station_path(self, target, gas):
+        """Build one station-to-station leg, including any off-grid gas switch."""
+        path = []
+        start = self.depth
+        for depth in self.switch_boundaries(gas, target) + [target]:
+            chosen = self.best_gas(gas, depth)
+            if depth != target and (chosen is gas or
+                    (self.gf_mode == 'low' and depth < self.settings['lastStop'] and not chosen.get('travelGas'))):
+                continue
+            path.append((depth, (start-depth)/ascent_rate(self.settings, gas['o2']), gas, 'gf_ascent'))
+            if depth != target:
+                path.append((depth, self.settings['switchTime'], chosen, 'switch'))
+                start, gas = depth, chosen
+        return path
+
+    def station_path_clear(self, path, factor):
+        """Check the whole candidate trajectory with the actual gas on each leg."""
+        tissues, start = self.tissues, self.depth
+        for end, duration, gas, phase in path:
+            if phase == 'gf_ascent':
+                duration *= factor
+            p0, p1 = self.pressure(start), self.pressure(end)
+            end_tissues = load_tissues(tissues, p0, p1, duration, gas['fractions'])
+            if ceiling(end_tissues, self.gf(end)) > p1 + 1e-9:
+                return False
+            samples = math.ceil(duration * 60)
+            for i in range(1, samples):
+                fraction = i/samples
+                depth = start + (end-start)*fraction
+                ambient = self.pressure(depth)
+                sample = load_tissues(tissues, p0, ambient, duration*fraction, gas['fractions'])
+                if ceiling(sample, self.gf(depth)) > ambient + 1e-9:
+                    return False
+            tissues, start = end_tissues, end
+        return True
+
+    def ascend_variable(self, gas, stop_credit):
+        self.refresh_ascent_mode(gas)
+        while self.depth > 1e-7:
+            target = 3 * math.floor((self.depth-1e-7)/3)
+            if target < self.settings['lastStop']:
+                target = 0
+            on_grid = abs(self.depth - 3*round(self.depth/3)) < 1e-7
+            chosen = self.best_gas(gas)
+            if chosen is not gas and (self.gf_mode != 'low' or self.depth >= self.settings['lastStop'] or chosen.get('travelGas')):
+                gas = chosen
+                self.advance(self.depth, self.settings['switchTime'], gas, 'switch')
+                stop_credit += self.settings['switchTime']
+                self.refresh_ascent_mode(gas)
+            path = self.station_path(target, gas)
+            if self.gf_mode == 'low' and self.anchor is None and not self.station_path_clear(path, 1):
+                self.anchor = self.depth if on_grid else target
+            station = (on_grid and self.anchor is not None and
+                       self.settings['lastStop'] <= self.depth <= self.anchor + 1e-7)
+            if station:
+                # A cursor snapshot can be partway through a committed stop minute.
+                complete_minutes = max(1, math.ceil(stop_credit - 1e-8))
+                if complete_minutes > stop_credit:
+                    self.advance(self.depth, complete_minutes-stop_credit, gas, 'deco')
+
+            travel = sum(duration for _, duration, _, phase in path if phase == 'gf_ascent')
+            factor = 1.
+            if not self.station_path_clear(path, factor):
+                # Allocate whole minutes at the station. Adjust the travel time
+                # for the remaining fraction, so the GF peak occurs on arrival.
+                extra = 1.
+                while not self.station_path_clear(path, 1 + extra/travel):
+                    if station:
+                        self.advance(self.depth, 1, gas, 'deco')
+                    else:
+                        # A restarted projection may already be between stations.
+                        extra *= 2
+                        if self.time + travel + extra > 1080:
+                            raise ValueError('无法在当前 GF 上限内到达下一减压站。')
+                fast, slow = 1., 1 + extra/travel
+                while (slow-fast)*travel > 1e-6:
+                    mid = (fast+slow)/2
+                    if self.station_path_clear(path, mid):
+                        slow = mid
+                    else:
+                        fast = mid
+                factor = slow
+            for end, duration, gas, phase in path:
+                if phase == 'switch':
+                    self.advance(end, duration, gas, phase)
+                else:
+                    start_time, start_depth = self.time, self.depth
+                    self.advance(end, duration*factor, gas, phase, log_leg=False)
+                    self.log_gf_leg(start_time, start_depth, gas)
+            stop_credit = 0.
+        return gas
+
     def ascend(self, gas, stop_credit=0):
+        if self.settings.get('ascentMode') == 'variable':
+            return self.ascend_variable(gas, stop_credit)
+        if self.settings.get('ascentMode') == 'constant':
+            return self.ascend_on_gf(gas)
         # A no-stop ascent is assessed at GF High before searching the GF Low anchor.
         self.refresh_ascent_mode(gas)
         safety_pending = self.settings['safetyStop'] > 0 and self.depth >= 5 and self.gf_mode=='high'
@@ -312,9 +604,18 @@ class Simulation:
             # station. Gas-switch dwell at the same depth counts toward it.
             if self.anchor is not None and switch_dwell+stop_credit < 1:
                 self.advance(self.depth,1-switch_dwell-stop_credit,gas,'deco')
+            if target == 0 and self.gf_mode == 'low' and any(g.get('travelGas') and g['enabled'] and
+                    g['o2'] > gas['o2'] and 0 < g['switchDepth'] < self.depth for g in self.gases.values()):
+                # A travel-gas handover on the final leg is not another stop.
+                path = self.station_path(0, gas)
+                while not self.station_path_clear(path, 1):
+                    self.advance(self.depth,1,gas,'deco')
+                for end,duration,gas,phase in path:
+                    self.advance(end,duration,gas,'switch' if phase=='switch' else 'ascent')
+                return gas
             while not self.can_ascend(target,gas):
                 self.advance(self.depth,1,gas,'deco')
-            self.advance(target,(self.depth-target)/self.settings['ascentRate'],gas,'ascent')
+            self.advance(target,(self.depth-target)/ascent_rate(self.settings, gas['o2']),gas,'ascent')
             stop_credit=0
         return gas
 
@@ -330,6 +631,8 @@ def ndl(payload):
     settings=dict(DEFAULTS)
     for key,low,high in [('gfHigh',1,100),('surfacePressure',.6,1.1),('density',.95,1.1),('ascentRate',1,18)]:
         settings[key]=number(raw.get(key,settings[key]),key,low,high)
+    if raw.get('ascentMode') == 'constant':
+        settings['gfHigh'] = number(raw.get('targetGF', 70), 'GF', 1, 100)
     point=payload.get('point',{})
     depth=number(point.get('depth'),'depth',0,150)
     rows=point.get('tissues',[])
@@ -338,6 +641,8 @@ def ndl(payload):
     tissues=[(number(row[0],'N2',0,100),number(row[1],'He',0,100)) for row in rows]
     raw_gas=payload.get('gas',{})
     o2=number(raw_gas.get('o2'),'O2',1,100)
+    if o2 >= 50:
+        settings['ascentRate'] = number(raw.get('decoAscentRate', settings['ascentRate']), 'decoAscentRate', 1, 18)
     he=number(raw_gas.get('he'),'He',0,99)
     if o2+he>100: raise ValueError('O2 + He must not exceed 100%.')
     gas=dict(id='current',o2=o2,he=he,fractions=((100-o2-he)/100,he/100))
@@ -410,28 +715,110 @@ def gas_details(settings, gases):
                  decoMod=max(0,(settings['ppo2Deco']/(g['o2']/100)-settings['surfacePressure'])/metre)) for g in gases]
 
 
+def route_travel_gas(sim, segments):
+    """Split assigned hypoxic-gas segments at travel-gas handovers."""
+    output = []
+    start = 0.
+    groups = [(key, list(rows)) for key, rows in groupby(segments, key=lambda row:row['gas'])]
+    for i, (key, rows) in enumerate(groups):
+        bottom = sim.gases[key]
+        if sim.surface * bottom['o2']/100 >= .16:
+            output.extend(rows)
+            start = rows[-1]['depth']
+            continue
+        peak = max(start,max(row['depth'] for row in rows))
+        previous = groups[i-1][0] if i else None
+        candidates = []
+        for candidate in sim.gases.values():
+            if not candidate['enabled'] or not (.16 <= sim.surface*candidate['o2']/100 <= sim.settings['ppo2Work']):
+                continue
+            if candidate['o2'] >= 50 and candidate['id'] != previous:
+                continue
+            mod = (sim.settings['ppo2Work']*100/candidate['o2'] - sim.surface)/sim.metre
+            boundary = candidate['switchDepth'] or min(150., mod)
+            bottom_po2 = sim.pressure(min(boundary, peak))*bottom['o2']/100
+            if boundary <= mod+1e-7 and .16-1e-9 <= bottom_po2 <= sim.settings['ppo2Work']+1e-9:
+                candidates.append((candidate, boundary))
+        if not candidates:
+            raise ValueError('没有能与底气交接的已启用旅行气，请检查气体和切换深度。')
+        travel, limit = max(candidates, key=lambda pair: (pair[0]['id']==previous,
+            bool(pair[0]['switchDepth']), pair[1], pair[0]['he']))
+        # The validated inventory is also returned to cursor TTS projections.
+        travel['switchDepth'] = limit
+        travel['travelGas'] = True
+        down = min(peak, limit)
+        if previous is not None and sim.pressure(start)*bottom['o2']/100 >= .16:
+            down = start  # explicit handover at the preceding segment boundary
+        up = limit
+        if i+1<len(groups) and groups[i+1][0]==travel['id'] and rows[-1]['depth'] < peak:
+            handover = rows[-1]['depth']
+            if sim.pressure(handover)*bottom['o2']/100 >= .16 and handover <= limit + 1e-7:
+                up = handover
+        for row in rows:
+            end = row['depth']
+            if end == start:
+                gas_id = output[-1]['gas'] if output else travel['id']
+                if end >= down-1e-8 and sim.pressure(end)*bottom['o2']/100 >= .16:
+                    gas_id = key
+                output.append(dict(row,gas=gas_id))
+                continue
+            boundary = down if end>start else up
+            cuts = [boundary,end] if min(start,end)<boundary<max(start,end) else [end]
+            depth = start
+            for cut in cuts:
+                gas_id = travel['id'] if (depth+cut)/2 < boundary else key
+                duration = row['duration']*abs(cut-depth)/abs(end-start)
+                output.append(dict(depth=cut,duration=duration,gas=gas_id))
+                depth = cut
+            start = end
+    return output
+
+
 def plan(payload, auto_ascent=True):
     settings,gases,segments=validate(payload,mode='plan' if auto_ascent else 'vision')
     simulation=Simulation(settings,gases)
     simulation.visualization=not auto_ascent
-    current=simulation.gases[segments[0]['gas']]
+    bottom_only = auto_ascent and payload.get('profileMode') == 'bottom'
+    generated = bottom_only and not payload.get('gases')
+    work = route_travel_gas(simulation, segments) if auto_ascent else segments
+    if bottom_only:
+        bottom_id = segments[0]['gas']
+        for gas in gases:
+            if gas['id'] != bottom_id and not gas['switchDepth'] and gas['enabled']:
+                limit = settings['ppo2Deco'] if gas['o2'] >= 50 else settings['ppo2Work']
+                gas['switchDepth'] = max(0,min(150,(limit*100/gas['o2']-simulation.surface)/simulation.metre))
+    current=simulation.gases[work[0]['gas']]
     simulation.record(current,'start')
-    for segment in segments:
+    for segment in work:
         gas=simulation.gases[segment['gas']]
         if gas['id'] != current['id']:
             if auto_ascent: simulation.advance(simulation.depth,settings['switchTime'],gas,'switch')
             else: simulation.record(gas,'switch')
         rate=(segment['depth']-simulation.depth)/segment['duration']
         if auto_ascent and rate > settings['descentRate']+1e-8: simulation.warn('descent','手动分段的下降速度超过设定上限。')
-        if auto_ascent and -rate > settings['ascentRate']+1e-8: simulation.warn('ascent','手动分段的上升速度超过设定上限。')
+        if auto_ascent and -rate > ascent_rate(settings,gas['o2'])+1e-8: simulation.warn('ascent','手动分段的上升速度超过设定上限。')
         simulation.advance(segment['depth'],segment['duration'],gas,'segment')
         current=gas
     ascent_start=simulation.time
+    if generated and simulation.can_ascend(0,current):
+        for gas in gases:
+            if gas['id'].startswith('auto-deco-'):
+                gas['enabled']=False
     if auto_ascent: simulation.ascend(current)
     gas_results=[]
     for gas in gases:
         used=simulation.used[gas['id']]
-        remaining=gas['pressure']-used/gas['size']
+        count=1
+        if generated:
+            # Size the modeled supply for the route and reserve. The displayed
+            # pressure is the equivalent pressure across equal-sized supplies.
+            count=max(1,math.ceil(used/(gas['size']*(gas['pressure']-settings['reserve']))))
+            gas['cylinderCount']=count
+            if count>1:
+                for point in simulation.points:
+                    drop=gas['pressure']-point['pressures'][gas['id']]
+                    point['pressures'][gas['id']]=gas['pressure']-drop/count
+        remaining=gas['pressure']-used/(count*gas['size'])
         gas_results.append({key:value for key,value in gas.items() if key!='fractions'} | dict(used=used,remaining=remaining))
         if used and remaining < settings['reserve']:
             detail='气量不足' if remaining < 0 else '低于预留压力'
@@ -450,10 +837,144 @@ def plan(payload, auto_ascent=True):
                     gasUsed=sum(simulation.used.values()),maxPPO2=simulation.max_ppo2,
                     maxGF99=max(point['gf99'] for point in simulation.points),
                     endDepth=simulation.depth))
-    if payload.get('useDefaultRates') is True and 'waypoints' in payload:
+    if bottom_only:
+        result.update(gasSource='generated' if generated else 'inventory',bottomGas=segments[0]['gas'])
+    if not bottom_only and payload.get('useDefaultRates') is True and 'waypoints' in payload:
         result['waypointTimings']=waypoint_timings(dict(payload,mode='plan' if auto_ascent else 'vision'))['waypointTimings']
     result['gfPressure']=gf_pressure_diagram(result)
     return result
+
+
+def load_cc_tissues(tissues, p0, p1, duration, ratios, setpoint):
+    """Apply Schreiner to the inspired N2/He pressures in an ideal CCR loop."""
+    threshold = WATER_VAPOUR + setpoint
+    if min(p0, p1) < threshold < max(p0, p1):
+        before = duration*(threshold-p0)/(p1-p0)
+        tissues = load_cc_tissues(tissues, p0, threshold, before, ratios, setpoint)
+        return load_cc_tissues(tissues, threshold, p1, duration-before, ratios, setpoint)
+    # load_tissues subtracts vapour pressure. Pass the equivalent pressure
+    # whose dry part is the loop's remaining inert partial pressure.
+    return load_tissues(tissues, max(WATER_VAPOUR, p0-setpoint),
+                        max(WATER_VAPOUR, p1-setpoint), duration, ratios)
+
+
+class ClosedCircuitSimulation(Simulation):
+    def __init__(self, settings, loop, setpoint, bailout_time):
+        super().__init__(settings, [loop])
+        self.setpoint = setpoint
+        self.bailout_time = bailout_time
+        self.branch = None
+
+    def tissue_step(self, tissues, p0, p1, duration, gas):
+        return load_cc_tissues(tissues, p0, p1, duration, gas['inertRatios'], self.setpoint)
+
+    def advance(self, depth, duration, gas, phase):
+        if duration <= 0:
+            return
+        end = self.time + duration
+        if end > 1080:
+            raise ValueError('模拟超过 1080 分钟，请缩短潜水时长或调整参数。')
+        p0, p1 = self.pressure(self.depth), self.pressure(depth)
+        if self.time <= self.bailout_time < end:
+            elapsed = self.bailout_time-self.time
+            branch_depth = self.depth+(depth-self.depth)*elapsed/duration
+            self.branch = dict(depth=branch_depth, time=self.bailout_time, anchor=self.anchor,
+                               gf_mode=self.gf_mode, credit=self.stop_elapsed+elapsed if phase=='deco' else 0,
+                               in_transit=phase=='ascent' and elapsed>0,
+                               tissues=self.tissue_step(self.tissues,p0,self.pressure(branch_depth),elapsed,gas))
+        self.tissues = self.tissue_step(self.tissues, p0, p1, duration, gas)
+        self.stop_elapsed = self.stop_elapsed+duration if phase=='deco' else 0
+        previous = self.schedule[-1] if self.schedule else None
+        if previous and previous['phase']==phase and (phase=='ascent' or phase=='deco' and previous['depth']==depth):
+            previous.update(depth=depth, duration=previous['duration']+duration, runtime=end)
+        else:
+            self.schedule.append(dict(phase=phase, fromDepth=self.depth, depth=depth,
+                                      duration=duration, runtime=end, gas='CC'))
+        self.time, self.depth = end, depth
+
+
+def oc_bailout(payload, settings, branch):
+    if branch is None or branch['depth'] <= 1e-7:
+        raise ValueError('切换时刻必须在 CC 剖面的水下部分。')
+    if not payload.get('gases'):
+        raise ValueError('请添加至少一支 OC 应急气瓶。')
+    inputs = payload.get('settings', {})
+    limits = {k:inputs[k] for k in ('ppo2Work','ppo2Deco','reserve') if k in inputs}
+    settings, gases = validate_environment(dict(settings=settings | limits, gases=payload['gases']))
+    settings['sacDeco'] = number(payload.get('bailoutSCR', 25), 'Bailout SCR', 1, 150)
+    sim = ProjectionSimulation(settings, gases)
+    sim.time, sim.depth = branch['time'], branch['depth']
+    sim.tissues = list(branch['tissues'])
+    sim.anchor, sim.gf_mode = branch['anchor'], branch['gf_mode']
+    sim.stop_elapsed = branch['credit']
+
+    for gas in gases:
+        limit = settings['ppo2Deco'] if gas['o2'] >= 50 else settings['ppo2Work']
+        mod = (limit*100/gas['o2']-sim.surface)/sim.metre
+        gas['switchDepth'] = min(gas['switchDepth'] or 150, mod)
+    candidates = [gas for gas in gases if gas['enabled'] and sim.depth <= gas['switchDepth']+1e-8
+                  and sim.pressure(sim.depth)*gas['o2']/100 >= .16]
+    if not candidates:
+        raise ValueError('切换深度没有符合氧分压及切换深度限制的 OC 气体。')
+    initial = max(candidates,key=lambda g:(g['o2'],g['he']))
+    # A breathable travel gas may be needed on the final leg above the last
+    # station when the initial bailout mix is hypoxic at the surface.
+    if sim.surface*initial['o2']/100 < .16:
+        for gas in gases:
+            if gas['enabled'] and gas['o2'] > initial['o2'] and gas['o2'] < 50 and sim.surface*gas['o2']/100 >= .16:
+                gas['travelGas'] = True
+    sim.ascend(initial,stop_credit=1 if branch['in_transit'] else branch['credit'])
+    if any(w['code'] in ('oxygen','hypoxia') for w in sim.warnings):
+        raise ValueError('所填 OC 气体无法在整段应急上升中维持模型的氧分压范围。')
+    supply = []
+    for gas in gases:
+        used = sim.used[gas['id']]
+        if used:
+            shortfall = max(0,used + (settings['reserve']-gas['pressure'])*gas['size'])
+            supply.append(dict(id=gas['id'], name=gas['name'], used=used, shortfall=shortfall,
+                               remaining=gas['pressure']-used/gas['size']))
+    return dict(available=True, startTime=branch['time'], startDepth=branch['depth'], initialGas=initial['name'],
+                surfaceTime=sim.time, tts=sim.time-branch['time'], schedule=sim.schedule, gases=supply,
+                decoTime=sum(r['duration'] for r in sim.schedule if r['phase']=='deco'))
+
+
+def cc_plan(payload):
+    depth = number(payload.get('depth'), '底部深度', .1, 150)
+    hold = number(payload.get('duration'), '底部停留时长', 0, 180)
+    setpoint = number(payload.get('setpoint'), 'Setpoint', .4, 1.6)
+    oxygen = number(payload.get('diluentO2'), 'Diluent O₂', 1, 99)
+    helium = number(payload.get('diluentHe'), 'Diluent He', 0, 99)
+    if oxygen+helium > 100:
+        raise ValueError('氧气与氦气比例之和不能超过 100%。')
+    # The ideal loop has a single diluent and an independent oxygen supply.
+    loop = dict(id='loop', name='CC', o2=oxygen, he=helium, size=1, pressure=200)
+    allowed = ('gfLow','gfHigh','ascentRate','descentRate','surfacePressure','density','lastStop')
+    inputs = payload.get('settings', {})
+    settings, (loop,) = validate_environment(dict(settings={k:inputs[k] for k in allowed if k in inputs}, gases=[loop]))
+    loop['inertRatios'] = tuple(g/(1-oxygen/100) for g in loop['fractions'])
+    descent = depth/settings['descentRate']
+    departure = descent + hold
+    value = payload.get('bailoutTime')
+    # An invalid bailout time should not hide a valid CC plan.
+    branch_time = departure if value in ('',None) else None
+    if branch_time is None:
+        try:
+            branch_time = number(value, 'Bailout time', 0, 1080)
+        except ValueError:
+            branch_time = math.inf
+    sim = ClosedCircuitSimulation(settings, loop, setpoint, branch_time)
+    sim.advance(depth, descent, loop, 'descent')
+    sim.advance(depth, hold, loop, 'hold')
+    sim.ascend(loop)
+    cc = dict(schedule=sim.schedule, surfaceTime=sim.time, tts=sim.time-departure,
+              decoTime=sum(r['duration'] for r in sim.schedule if r['phase']=='deco'),
+              diluentPPO2=sim.pressure(depth)*oxygen/100,
+              surfaceLoopPPO2=min(setpoint,sim.surface-WATER_VAPOUR))
+    try:
+        bailout = oc_bailout(payload, settings, sim.branch)
+    except ValueError as exc:
+        bailout = dict(available=False, reason=str(exc))
+    return dict(cc=cc, bailout=bailout)
 
 
 def sac(payload):
@@ -491,7 +1012,6 @@ def waypoint_timings(payload):
         raise ValueError('默认速度模式请设置 1–12 个目标深度。')
     mode=payload.get('mode','vision')
     if mode not in ('plan','vision'): raise ValueError('Invalid segment timing mode.')
-    settings=payload.get('settings',{})
     previous=0
     segments=[]
     timings=[]
@@ -503,8 +1023,7 @@ def waypoint_timings(payload):
         travel=0
         if depth!=previous:
             kind='descent' if depth>previous else 'ascent'
-            key=kind+'Rate'
-            rate=number(settings.get(key,DEFAULTS[key]) if mode=='plan' else DEFAULTS[key],key,1,30 if kind=='descent' else 18)
+            rate=segment_rate(payload,kind,gas)
             travel=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
             segments.append(dict(depth=depth,duration=travel,rate=rate,gas=gas,kind=kind))
         if hold>0:
@@ -528,7 +1047,6 @@ def segment_timings(payload):
         raise ValueError('请设置 1–24 个潜水分段。')
     mode=payload.get('mode','vision')
     if mode not in ('plan','vision'): raise ValueError('Invalid segment timing mode.')
-    settings=payload.get('settings',{})
     has_global='useDefaultRates' in payload
     global_default=payload.get('useDefaultRates')
     if has_global and not isinstance(global_default,bool):
@@ -547,9 +1065,7 @@ def segment_timings(payload):
             duration=number(row.get('duration'),f'第 {i+1} 段耗时',.000001,180)
             rate=None
         elif default_rate:
-            key=kind+'Rate'
-            raw_rate=settings.get(key,DEFAULTS[key]) if mode=='plan' else DEFAULTS[key]
-            rate=number(raw_rate,key,1,30 if kind=='descent' else 18)
+            rate=segment_rate(payload,kind,str(row.get('gas','')))
             duration=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
         elif mode=='plan' and row.get('duration') is not None:
             duration=number(row['duration'],f'第 {i+1} 段耗时',.000001,180)
@@ -680,6 +1196,16 @@ def blend(payload):
 # Error localization at the JSON boundary keeps the numerical API language-neutral.
 # Parameterized messages are translated through ordered phrase replacements.
 EN_MESSAGES = {
+'切换时刻必须在 CC 剖面的水下部分。':'Choose a bailout time during the underwater portion of the CC profile.',
+'请添加至少一支 OC 应急气瓶。':'Add at least one OC bailout cylinder.',
+'切换深度没有符合氧分压及切换深度限制的 OC 气体。':'No OC gas meets the oxygen pressure and switch-depth limits at bailout.',
+'所填 OC 气体无法在整段应急上升中维持模型的氧分压范围。':'The OC gases cannot maintain the modeled oxygen pressure limits throughout the ascent.',
+'标准气表中没有同时满足目标深度、工作氧分压和气体密度上限的底气。请核对参数或录入可用气体。':'No standard bottom mix meets the target depth, working PPO₂ and gas density limits. Check the settings or enter available gases.',
+'没有适合目标深度的已启用底气，请检查氧分压与切换深度。':'No enabled bottom mix meets the oxygen pressure and switch-depth limits at the target depth.',
+'没有能与底气交接的已启用旅行气，请检查气体和切换深度。':'No enabled travel mix overlaps the bottom mix at a valid switch depth. Check gas composition and switch depths.',
+'底部深度':'Bottom depth','底部停留时长':'Bottom hold duration',
+'无法在当前 GF 上限内到达下一减压站。':'The next station cannot be reached within the current GF limit.',
+'在当前气体和深度无法保持目标 GF。请检查分段和气体设置。':'The target GF cannot be maintained at this depth on this gas. Check the entered profile and gases.',
 '请设置 1–24 个潜水分段。':'Set 1–24 dive segments.',
 '默认速度模式请设置 1–12 个目标深度。':'Set 1–12 target depths in default speed mode.',
 
@@ -739,6 +1265,13 @@ def handle_json(request):
         action=request.get('action','plan')
         payload=request.get('payload',{})
         if action=='plan': result=plan(payload)
+        elif action=='cc_plan':
+            result=cc_plan(payload)
+            if not result['bailout']['available']:
+                result['bailout']['reason']=localize(result['bailout']['reason'],lang)
+        elif action=='constant_gf':
+            settings=dict(payload.get('settings',{}),ascentMode='constant')
+            result=plan(dict(payload,settings=settings))
         elif action=='visualize': result=visualize(payload)
         elif action=='segments': result=segment_timings(payload)
         elif action=='ndl': result=ndl(payload)

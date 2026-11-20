@@ -81,10 +81,5 @@
 .standard-gas-result li{padding:5px 9px;background:var(--soft);color:var(--ink);border-radius:6px;font-size:12px}
 
 @media(min-width:521px) and (max-width:900px){.tool-nav{grid-template-columns:repeat(3,minmax(0,1fr))}}
-.cc-chart{display:block;width:100%;height:auto;overflow:visible}
-.cc-chart text{fill:var(--muted);font:12px system-ui,sans-serif}
-.cc-chart line{stroke:var(--line);stroke-dasharray:4 4}
-.cc-chart polyline{fill:none;stroke-width:3;stroke-linejoin:round}
-.cc-main-line{stroke:var(--blue)}.cc-bo-line{stroke:var(--teal);stroke-dasharray:6 4}.cc-branch{fill:var(--teal);stroke:var(--paper)}
 .cc-metrics{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted)}
 .cc-metrics strong{display:block;color:var(--ink)}

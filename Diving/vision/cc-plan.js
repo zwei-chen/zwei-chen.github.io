@@ -1,12 +1,13 @@
 import {PythonEngine} from './engine.js';
+import {createProfileView} from './profile-view.js';
 import {t} from './language.js';
-import {escapeHTML as esc, format as f, timeAxisTicks} from './charts.js';
+import {escapeHTML as esc, format as f} from './charts.js';
 
 const $ = selector => document.querySelector(selector);
 const form = $('#cc-form');
 const calculate = $('#calculate-cc');
 const status = $('#engine-status');
-const chart = $('#cc-profile');
+
 const main = $('#cc-main-result');
 const emergency = $('#cc-bailout-result');
 const error = $('#cc-error');
@@ -19,11 +20,18 @@ function cylinder(preset) {
 let cylinders = [cylinder('air'), cylinder('ean50')];
 let revision = 0;
 let busy = false;
-const emptyChart = chart.innerHTML;
+const caption = $('#profile-caption');
+const initialCaption = caption.textContent;
+let currentPlan = null;
 try {
   const draft = JSON.parse(localStorage.getItem(storageKey));
   if (Array.isArray(draft?.cylinders) && draft.cylinders.length <= 8 && draft.cylinders.every(g=>g && typeof g==='object')) {
     cylinders = draft.cylinders;
+    if (draft.fields?.setpoint && !draft.fields.setpointHigh) {
+      const old = Number(draft.fields.setpoint);
+      if (old >= .7 && old <= 1.6) draft.fields.setpointHigh = old;
+      else if (old >= .4 && old < .7) Object.assign(draft.fields,{setpointLow:old,spSwitch:'low'});
+    }
     for (const [name,value] of Object.entries(draft.fields || {})) {
       const field = form.elements.namedItem(name);
       if (field) field.value = value;
@@ -45,11 +53,20 @@ function renderCylinders() {
   }).join('');
   form.querySelectorAll('[data-mix]').forEach(btn=>btn.disabled=cylinders.length>=8);
 }
+function syncSwitchDepth() {
+  const enabled = form.elements.spSwitch.value === 'descent';
+  $('#sp-depth-field').hidden = !enabled;
+  form.elements.spDepth.disabled = !enabled;
+}
 function invalidate() {
   revision++;
   error.hidden = true;
   main.hidden = emergency.hidden = true;
-  chart.innerHTML = emptyChart;
+  currentPlan = null;
+  profileView.clear();
+  caption.textContent = initialCaption;
+  updateBranchButtons('cc');
+  syncSwitchDepth();
   if(engine.ready) status.textContent=t('输入已更新，请重新计算。','Inputs changed. Calculate again.');
   try {localStorage.setItem(storageKey,JSON.stringify({fields:Object.fromEntries(new FormData(form)),cylinders}));} catch {}
 }
@@ -73,27 +90,51 @@ function timeSummary(data) {
 }
 const phases = {descent:t('下潜','Descent'),hold:t('底部停留','Bottom hold'),ascent:t('上升','Ascent'),deco:t('减压停留','Deco stop'),switch:t('换气','Gas switch')};
 function schedule(data,names) {
-  const rows=data.schedule.map(row=>`<tr><td>${phases[row.phase]}</td><td>${f(row.depth,2)}</td><td>${f(row.duration,2)}</td><td>${f(row.runtime,2)}</td><td>${esc(names[row.gas]||'CC')}</td></tr>`).join('');
+  const rows=data.schedule.map(row=>`<tr><td>${phases[row.phase]}</td><td>${f(row.depth,2)}</td><td>${f(row.duration,2)}</td><td>${f(row.runtime,2)}</td><td>${row.setpoint != null ? 'CC · '+f(row.setpoint,2)+' bar' : esc(names[row.gas]||row.gas)}</td></tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr><th>${t('阶段','Phase')}</th><th>${t('深度','Depth')} (m)</th><th>${t('耗时','Duration')} (min)</th><th>${t('累计','Runtime')} (min)</th><th>${t('气体','Gas')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-function drawChart(cc,bo) {
-  const runtime=Math.max(cc.surfaceTime, bo.available?bo.surfaceTime:0);
-  const maxDepth=Math.max(...cc.schedule.map(row=>row.depth));
-  const x=time=>47+596*time/runtime, y=depth=>24+175*depth/maxDepth;
-  const xTicks=timeAxisTicks(runtime,560);
-  const depthTicks=[0,.25,.5,.75,1].map(n=>n*maxDepth);
-  const coords=(start,rows)=>[start,...rows.map(r=>[r.runtime,r.depth])].map(([tm,d])=>`${x(tm)},${y(d)}`).join(' ');
-  let lines=`<polyline class="cc-main-line" points="${coords([0,0],cc.schedule)}"/>`;
-  if(bo.available) lines+=`<polyline class="cc-bo-line" points="${coords([bo.startTime,bo.startDepth],bo.schedule)}"/><circle class="cc-branch" cx="${x(bo.startTime)}" cy="${y(bo.startDepth)}" r="4"/>`;
-  const grid=depthTicks.map(d=>`<line x1="47" x2="643" y1="${y(d)}" y2="${y(d)}"/><text x="40" y="${y(d)+4}" text-anchor="end">${f(d)}</text>`).join('');
-  chart.innerHTML=`<svg class="cc-chart" viewBox="0 0 674 238" role="img" aria-label="${t('CC 主计划和 OC 应急上升的时间深度图','Depth over time for CC and OC bailout')}"><text x="12" y="14">m</text>${grid}${lines}${xTicks.map(tm=>`<text x="${x(tm)}" y="221" text-anchor="middle">${f(tm)}</text>`).join('')}<text x="660" y="237" text-anchor="end">min</text></svg>
-    <div class="chart-legend"><span><i style="--swatch:var(--blue)"></i>CC</span>${bo.available?'<span><i class="dashed" style="--swatch:var(--teal)"></i>OC bailout</span>':''}</div>`;
+const branchButtons = [...document.querySelectorAll('[data-profile-view]')];
+function updateBranchButtons(view) {
+  for (const button of branchButtons) {
+    button.disabled = !currentPlan || (button.dataset.profileView === 'bailout' && !currentPlan.bailout.available);
+    button.setAttribute('aria-pressed',String(button.dataset.profileView === view));
+  }
 }
-function render({cc,bailout:bo},setpoint) {
-  drawChart(cc,bo);
+function showProfile(view) {
+  const {cc,bailout} = currentPlan;
+  const onLoop = view === 'cc';
+  const data = onLoop ? cc : bailout;
+  const points = onLoop ? cc.profilePoints : [
+    ...cc.profilePoints.filter(p=>p.time < bailout.startTime - 1e-8), ...bailout.profilePoints
+  ];
+  const minutes = new Map();
+  points.forEach((point,i)=>{
+    const minute = Math.round(point.time);
+    if (Math.abs(point.time-minute)<1e-8) minutes.set(minute,i);
+  });
+  const minuteIndices = [...minutes.values()];
+  if (minuteIndices.at(-1)!==points.length-1) minuteIndices.push(points.length-1);
+  const comparison = bailout.available && {
+    label:onLoop?'OC bailout':t('CC 主计划','CC main plan'),
+    points:onLoop?bailout.profilePoints:cc.profilePoints.filter(p=>p.time >= bailout.startTime - 1e-8)
+  };
+  const gas = cc.inventory[0];
+  const loopLabel = gas.he ? 'CC · Tx'+f(gas.o2)+'/'+f(gas.he) : 'CC · '+t('稀释气','Diluent')+' O₂ '+f(gas.o2)+'%';
+  updateBranchButtons(view);
+  caption.textContent = (onLoop?t('CC 主计划','CC main plan'):'OC bailout')+' · GF '+f(data.settings.gfLow)+'/'+f(data.settings.gfHigh);
+  profileView.setData({mode:'plan',points,minuteIndices,settings:data.settings,loopSettings:cc.settings,
+    gases:onLoop?cc.inventory:[...cc.inventory,...bailout.inventory],loopId:gas.id,loopLabel,comparison,
+    summary:{runtime:data.surfaceTime,maxDepth:Math.max(...points.map(p=>p.depth)),
+      maxGF99:Math.max(...points.map(p=>p.gf99))}});
+}
+for (const button of branchButtons) button.addEventListener('click',()=>showProfile(button.dataset.profileView));
+function render(result) {
+  currentPlan=result;
+  const {cc,bailout:bo}=result;
+  showProfile('cc');
   main.innerHTML=`<h2>${t('CC 主计划','CC main plan')}</h2>${timeSummary(cc)}
-    <p class="hint">${t('设定点','Setpoint')} ${f(setpoint,2)} bar · ${t('底部稀释气 pO₂','Diluent pO₂ at depth')} ${f(cc.diluentPPO2,2)} bar · ${t('水面模拟回路 pO₂','Modeled surface loop pO₂')} ${f(cc.surfaceLoopPPO2,2)} bar</p>
-    ${cc.diluentPPO2>Number(setpoint)?`<p class="warning">${t('底部稀释气氧分压高于设定点。冲洗回路时会偏离此恒定设定点模拟。','Diluent pO₂ at depth exceeds the setpoint. A diluent flush would depart from this constant-setpoint simulation.')}</p>`:''}
+    <p class="hint">PPO₂ Low / High ${f(cc.setpointLow,2)} / ${f(cc.setpointHigh,2)} bar · ${t('底部稀释气 pO₂','Diluent pO₂ at depth')} ${f(cc.diluentPPO2,2)} bar · ${t('水面模拟回路 pO₂','Modeled surface loop pO₂')} ${f(cc.surfaceLoopPPO2,2)} bar</p>
+    ${cc.diluentPPO2>cc.bottomSetpoint?`<p class="warning">${t('底部稀释气氧分压高于设定点。冲洗回路时会偏离此恒定设定点模拟。','Diluent pO₂ at depth exceeds the setpoint. A diluent flush would depart from this constant-setpoint simulation.')}</p>`:''}
     ${schedule(cc,{})}`;
   main.hidden=false;
   emergency.innerHTML='<h2>OC bailout</h2>';
@@ -114,6 +155,7 @@ const engine = new PythonEngine(status,()=>{
   $('#retry-engine').hidden=true;
   form.requestSubmit();
 },()=>{calculate.disabled=true;$('#retry-engine').hidden=false;});
+const profileView = createProfileView(engine);
 function namedCylinder(g,index){
   const label=Number(g.he)>0?`Tx${g.o2}/${g.he}`:Number(g.o2)===21?'Air':Number(g.o2)===100?'O₂':`EAN${g.o2}`;
   return {...g,id:'bo-'+index,name:`[${index+1}] ${label}`};
@@ -122,13 +164,13 @@ form.addEventListener('submit',async(event)=>{
   event.preventDefault();
   if(!engine.ready||busy)return;
   const expected=revision, fields=Object.fromEntries(new FormData(form));
-  const {depth,duration,diluentO2,diluentHe,setpoint,bailoutTime,bailoutSCR,...settings}=fields;
+  const {depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,...settings}=fields;
   busy=true; calculate.disabled=true; error.hidden=true;
   status.textContent=t('正在计算…','Calculating…');
   try {
-    const result=await engine.call('cc_plan',{depth,duration,diluentO2,diluentHe,setpoint,bailoutTime,bailoutSCR,settings,gases:cylinders.map(namedCylinder)});
+    const result=await engine.call('cc_plan',{depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,settings,gases:cylinders.map(namedCylinder)});
     if(expected!==revision)return;
-    render(result,setpoint);
+    render(result);
     status.textContent=t('计算完成。','Calculation complete.');
   } catch(e) {
     if(expected===revision){error.textContent=e.message;error.hidden=false;if(engine.ready) status.textContent=t('本次计算未完成。','Calculation did not complete.');}
@@ -136,4 +178,6 @@ form.addEventListener('submit',async(event)=>{
 });
 $('#retry-engine').addEventListener('click',()=>engine.start());
 renderCylinders();
+syncSwitchDepth();
+updateBranchButtons('cc');
 engine.start();

@@ -101,12 +101,19 @@ export function createCharts(profile, tissue, legend, onSelect) {
       }
       body+='</g>';
     }
+    const depthAxis = axes.find(axis=>axis.mode==='depth');
+    const compare = depthAxis && result.comparison;
+    const compareColor = '#18a697';
+    if (compare) {
+      const coords = compare.points.map(p=>x(p.time).toFixed(2)+','+depthAxis.y(p.depth).toFixed(2)).join(' ');
+      body+=`<defs><clipPath id="profile-plot-clip"><rect x="${left}" y="${top-1}" width="${innerWidth}" height="${innerHeight+2}"/></clipPath></defs><polyline class="profile-comparison" points="${coords}" clip-path="url(#profile-plot-clip)" fill="none" stroke="${compareColor}" stroke-width="2" stroke-dasharray="6 4"/>`;
+    }
     const xx=x(points[cursor].time);
     body+=`<line class="profile-cursor" x1="${xx}" x2="${xx}" y1="${top}" y2="${height-bottom}" stroke="${theme.getPropertyValue('--chart-label').trim()}" stroke-width="1" stroke-dasharray="3 3"/>`;
     for(const axis of axes)for(const item of axis.series.filter(item=>!item.dash))body+=`<circle cx="${xx}" cy="${axis.y(item.values[cursor])}" r="4" fill="${paper}" stroke="${item.color}" stroke-width="2"/>`;
     const description=axes.map(axis=>`${axis.title} (${axis.unit})`).join(' · ');
     profile.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHTML(description)} ${t('随时间变化','over time')}" style="min-width:${width}px" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${paper}"/>${body}</svg>`;
-    legend.innerHTML=axes.flatMap(axis=>axis.series.map(item=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash))).join('');
+    legend.innerHTML=axes.flatMap(axis=>axis.series.map(item=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash))).join('')+(compare?legendItem(compareColor,compare.label,true):'');
   }
   function drawTissues() {
     if (!result || !tissue) return;

@@ -17,7 +17,7 @@ class Page(HTMLParser):
             self.names.append(a['name'])
             if any('primary-settings' in parent.get('class','') for _,parent in self.stack):self.primary.append(a['name'])
             if any(t=='details' and 'advanced' in parent.get('class','') for t,parent in self.stack):self.advanced.append(a['name'])
-            assert not any('hidden' in parent for _,parent in self.stack),a
+            assert 'disabled' in a or not any('hidden' in parent for _,parent in self.stack),a
         if tag=='html':self.lang=a.get('lang')
         if tag in ('script','style'):self.skip+=1
         if tag=='a':self.links.append(a.get('href',''));self.active+=a.get('aria-current')=='page'
@@ -50,6 +50,13 @@ for language,prefix in [('zh',''),('en','en/')]:
             assert page.primary==expected,(path,page.primary)
             assert set(page.advanced)=={'density','surfacePressure','altitude','ppo2Work','reserve','sacDeco','ppo2Deco'} | ({'lastStop'} if tool!='constant-gf' else set()) | ({'ascentMode'} if tool=='plan' else set()),(path,page.advanced)
             assert not {'switchTime','safetyStop'} & set(page.names),path
+        if tool in ('plan','cc-plan'):
+            assert {'profile-chart','time-cursor','play-profile','tissue-chart','compartment-grid'} <= set(page.ids),path
+            assert ('open-gf-window' in page.ids) == (tool=='plan'),path
+            assert ('gf-pressure-chart' in page.ids) == (tool=='plan'),path
+        if tool=='cc-plan':
+            assert {'setpointLow','setpointHigh','spSwitch','spDepth','fo2Limit'} <= set(page.names),path
+            assert 'cursor-setpoint' in page.ids,path
         if tool=='plan':
             ids=list(page.ids)
             assert ids.index('bottom-duration') < ids.index('gas-list') and ids.index('segment-list') < ids.index('gas-list'),path

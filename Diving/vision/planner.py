@@ -845,17 +845,23 @@ def plan(payload, auto_ascent=True):
     return result
 
 
-def load_cc_tissues(tissues, p0, p1, duration, ratios, setpoint):
-    """Apply Schreiner to the inspired N2/He pressures in an ideal CCR loop."""
-    threshold = WATER_VAPOUR + setpoint
-    if min(p0, p1) < threshold < max(p0, p1):
-        before = duration*(threshold-p0)/(p1-p0)
-        tissues = load_cc_tissues(tissues, p0, threshold, before, ratios, setpoint)
-        return load_cc_tissues(tissues, threshold, p1, duration-before, ratios, setpoint)
-    # load_tissues subtracts vapour pressure. Pass the equivalent pressure
-    # whose dry part is the loop's remaining inert partial pressure.
-    return load_tissues(tissues, max(WATER_VAPOUR, p0-setpoint),
-                        max(WATER_VAPOUR, p1-setpoint), duration, ratios)
+def loop_oxygen(pressure, setpoint, fo2_limit):
+    return min(setpoint, pressure*fo2_limit, pressure-WATER_VAPOUR)
+
+
+def load_cc_tissues(tissues, p0, p1, duration, ratios, setpoint, fo2_limit=1.0):
+    """Integrate each linear section of the capped loop pressure exactly."""
+    breaks = [setpoint+WATER_VAPOUR, setpoint/fo2_limit]
+    if fo2_limit < 1:
+        breaks.append(WATER_VAPOUR/(1-fo2_limit))
+    cuts = sorted({p for p in breaks if min(p0,p1)<p<max(p0,p1)}, reverse=p1<p0)
+    start = p0
+    for end in [*cuts,p1]:
+        minutes = duration*(end-start)/(p1-p0) if p0!=p1 else duration
+        tissues = load_tissues(tissues,start-loop_oxygen(start,setpoint,fo2_limit),
+                               end-loop_oxygen(end,setpoint,fo2_limit),minutes,ratios)
+        start = end
+    return tissues
 
 
 class ClosedCircuitSimulation(Simulation):
@@ -864,9 +870,19 @@ class ClosedCircuitSimulation(Simulation):
         self.setpoint = setpoint
         self.bailout_time = bailout_time
         self.branch = None
+        self.collect = True
+        self.limit = settings.get('fo2Limit',100)/100
 
     def tissue_step(self, tissues, p0, p1, duration, gas):
-        return load_cc_tissues(tissues, p0, p1, duration, gas['inertRatios'], self.setpoint)
+        return load_cc_tissues(tissues, p0, p1, duration, gas['inertRatios'], self.setpoint, self.limit)
+
+    def observe(self, gas, phase, depth, time, tissues, credit, cns):
+        pressure = self.pressure(depth)
+        po2 = loop_oxygen(pressure,self.setpoint,self.limit)
+        inert = pressure-WATER_VAPOUR-po2
+        inspired = dict(gas, fractions=tuple(r*inert/(pressure-WATER_VAPOUR) for r in gas['inertRatios']))
+        self.record(inspired,phase,time=time,depth=depth,tissues=tissues,stop_elapsed=credit,cns=cns)
+        self.points[-1].update(setpoint=self.setpoint,ppo2=po2,ppn2=inert*gas['inertRatios'][0],pressures={})
 
     def advance(self, depth, duration, gas, phase):
         if duration <= 0:
@@ -875,22 +891,80 @@ class ClosedCircuitSimulation(Simulation):
         if end > 1080:
             raise ValueError('模拟超过 1080 分钟，请缩短潜水时长或调整参数。')
         p0, p1 = self.pressure(self.depth), self.pressure(depth)
-        if self.time <= self.bailout_time < end:
-            elapsed = self.bailout_time-self.time
-            branch_depth = self.depth+(depth-self.depth)*elapsed/duration
-            self.branch = dict(depth=branch_depth, time=self.bailout_time, anchor=self.anchor,
-                               gf_mode=self.gf_mode, credit=self.stop_elapsed+elapsed if phase=='deco' else 0,
-                               in_transit=phase=='ascent' and elapsed>0,
-                               tissues=self.tissue_step(self.tissues,p0,self.pressure(branch_depth),elapsed,gas))
-        self.tissues = self.tissue_step(self.tissues, p0, p1, duration, gas)
-        self.stop_elapsed = self.stop_elapsed+duration if phase=='deco' else 0
+        branched = self.time <= self.bailout_time < end
+        samples = {end}
+        if self.collect:
+            samples.update(range(math.floor(self.time)+1,math.ceil(end)))
+        if branched:
+            samples.add(self.bailout_time)
+        previous_time, previous_pressure = self.time, p0
+        for time in sorted(samples):
+            elapsed = time-self.time
+            at_depth = depth if time==end else self.depth+(depth-self.depth)*elapsed/duration
+            ambient = self.pressure(at_depth)
+            # Snapshots do not change the numerical tissue trajectory.
+            tissues = self.tissue_step(self.tissues,p0,ambient,elapsed,gas)
+            remaining = time-previous_time
+            if self.collect and remaining>0:
+                steps = max(1,math.ceil(remaining*6))
+                for i in range(steps):
+                    pressure = previous_pressure+(ambient-previous_pressure)*(i+.5)/steps
+                    dose,_ = oxygen_rate(loop_oxygen(pressure,self.setpoint,self.limit))
+                    self.cns += (dose or 0)*remaining/steps
+            credit = self.stop_elapsed+elapsed if phase=='deco' else 0
+            if self.collect:
+                self.observe(gas,phase,at_depth,time,tissues,credit,self.cns)
+            if branched and time==self.bailout_time:
+                self.branch = dict(depth=at_depth,time=time,anchor=self.anchor,gf_mode=self.gf_mode,
+                                   credit=credit,in_transit=phase=='ascent' and elapsed>0,tissues=tissues,cns=self.cns)
+            previous_time,previous_pressure = time,ambient
+        self.tissues = tissues
+        self.stop_elapsed = credit
         previous = self.schedule[-1] if self.schedule else None
-        if previous and previous['phase']==phase and (phase=='ascent' or phase=='deco' and previous['depth']==depth):
+        if previous and previous['phase']==phase and (previous.get('setpoint')==self.setpoint and (phase=='ascent' or phase=='deco' and previous['depth']==depth)):
             previous.update(depth=depth, duration=previous['duration']+duration, runtime=end)
         else:
             self.schedule.append(dict(phase=phase, fromDepth=self.depth, depth=depth,
-                                      duration=duration, runtime=end, gas='CC'))
+                                      duration=duration, runtime=end, gas='CC', setpoint=self.setpoint))
         self.time, self.depth = end, depth
+
+
+def cc_point_metrics(payload):
+    settings, (gas,) = validate_environment(dict(settings=payload['settings'], gases=payload['gases']))
+    settings['fo2Limit'] = number(payload['settings']['fo2Limit'],'FO₂ limit',60,100)
+    point = payload['point']
+    depth = number(point['depth'],'depth',0,150)
+    sp = number(point['setpoint'],'Setpoint',.4,1.6)
+    gas['inertRatios'] = tuple(f/sum(gas['fractions']) for f in gas['fractions'])
+    tissues = [(n,h) for n,h,*_ in point['tissues']]
+    def probe():
+        sim = ClosedCircuitSimulation(settings,gas,sp,math.inf)
+        sim.collect = False
+        sim.depth,sim.tissues = depth,list(tissues)
+        return sim
+    ndl_sim = probe()
+    ambient = ndl_sim.pressure(depth)
+    minutes = 99
+    for elapsed in range(100):
+        if not ndl_sim.can_ascend(0,gas) or ceiling(ndl_sim.tissues,settings['gfHigh']/100)>ambient+1e-8:
+            minutes = max(0,elapsed-1)
+            break
+        ndl_sim.tissues=ndl_sim.tissue_step(ndl_sim.tissues,ambient,ambient,1,gas)
+    values=[]
+    reason=''
+    for delay in (0,5):
+        sim=probe()
+        sim.tissues=sim.tissue_step(sim.tissues,ambient,ambient,delay,gas)
+        sim.anchor,sim.gf_mode=point.get('gfAnchor'),point.get('gfMode','high')
+        try:
+            sim.ascend(gas, stop_credit=(point.get('stopElapsed',0)+delay if sim.anchor is not None else 0))
+            values.append(sim.time)
+        except ValueError as exc:
+            values.append(None)
+            reason=str(exc)
+    current,future=values
+    return dict(ndl=dict(minutes=minutes,capped=minutes==99),
+                projection=dict(tts=current,atPlus5=future,deltaPlus5=future-current if None not in values else None,reason=reason))
 
 
 def oc_bailout(payload, settings, branch):
@@ -902,7 +976,8 @@ def oc_bailout(payload, settings, branch):
     limits = {k:inputs[k] for k in ('ppo2Work','ppo2Deco','reserve') if k in inputs}
     settings, gases = validate_environment(dict(settings=settings | limits, gases=payload['gases']))
     settings['sacDeco'] = number(payload.get('bailoutSCR', 25), 'Bailout SCR', 1, 150)
-    sim = ProjectionSimulation(settings, gases)
+    sim = Simulation(settings, gases)
+    sim.cns = branch['cns']
     sim.time, sim.depth = branch['time'], branch['depth']
     sim.tissues = list(branch['tissues'])
     sim.anchor, sim.gf_mode = branch['anchor'], branch['gf_mode']
@@ -923,6 +998,7 @@ def oc_bailout(payload, settings, branch):
         for gas in gases:
             if gas['enabled'] and gas['o2'] > initial['o2'] and gas['o2'] < 50 and sim.surface*gas['o2']/100 >= .16:
                 gas['travelGas'] = True
+    sim.record(initial,'switch')
     sim.ascend(initial,stop_credit=1 if branch['in_transit'] else branch['credit'])
     if any(w['code'] in ('oxygen','hypoxia') for w in sim.warnings):
         raise ValueError('所填 OC 气体无法在整段应急上升中维持模型的氧分压范围。')
@@ -933,7 +1009,10 @@ def oc_bailout(payload, settings, branch):
             shortfall = max(0,used + (settings['reserve']-gas['pressure'])*gas['size'])
             supply.append(dict(id=gas['id'], name=gas['name'], used=used, shortfall=shortfall,
                                remaining=gas['pressure']-used/gas['size']))
-    return dict(available=True, startTime=branch['time'], startDepth=branch['depth'], initialGas=initial['name'],
+    # Retain minute snapshots and phase/leg endpoints, including arrivals and switches.
+    stops = {round(r['runtime'],8) for r in sim.schedule}
+    kept = [pt for pt in sim.points if abs(pt['time']-round(pt['time']))<1e-8 or round(pt['time'],8) in stops or pt['phase']=='switch']
+    return dict(profilePoints=kept, inventory=gases, settings=settings, available=True, startTime=branch['time'], startDepth=branch['depth'], initialGas=initial['name'],
                 surfaceTime=sim.time, tts=sim.time-branch['time'], schedule=sim.schedule, gases=supply,
                 decoTime=sum(r['duration'] for r in sim.schedule if r['phase']=='deco'))
 
@@ -941,7 +1020,19 @@ def oc_bailout(payload, settings, branch):
 def cc_plan(payload):
     depth = number(payload.get('depth'), '底部深度', .1, 150)
     hold = number(payload.get('duration'), '底部停留时长', 0, 180)
-    setpoint = number(payload.get('setpoint'), 'Setpoint', .4, 1.6)
+    legacy = 'setpoint' in payload and 'setpointLow' not in payload and 'setpointHigh' not in payload
+    if legacy:
+        low = high = number(payload['setpoint'], 'Setpoint', .4, 1.6)
+    else:
+        low = number(payload.get('setpointLow',.7),'PPO₂ Low',.4,1.3)
+        high = number(payload.get('setpointHigh',1.3),'PPO₂ High',.7,1.6)
+        if low > high:
+            raise ValueError('PPO₂ Low 不能大于 PPO₂ High。')
+    switch_mode = payload.get('spSwitch','bottom')
+    if switch_mode not in ('bottom','descent','low'):
+        raise ValueError('Unknown setpoint switch mode.')
+    switch_depth = number(payload.get('spDepth',0),'SP switch depth',0,150) if switch_mode=='descent' else depth
+    switch = switch_mode!='low' and switch_depth<=depth and switch_depth>0
     oxygen = number(payload.get('diluentO2'), 'Diluent O₂', 1, 99)
     helium = number(payload.get('diluentHe'), 'Diluent He', 0, 99)
     if oxygen+helium > 100:
@@ -951,6 +1042,7 @@ def cc_plan(payload):
     allowed = ('gfLow','gfHigh','ascentRate','descentRate','surfacePressure','density','lastStop')
     inputs = payload.get('settings', {})
     settings, (loop,) = validate_environment(dict(settings={k:inputs[k] for k in allowed if k in inputs}, gases=[loop]))
+    settings['fo2Limit'] = 100 if legacy else number(payload.get('fo2Limit',90),'FO₂ limit',60,96)
     loop['inertRatios'] = tuple(g/(1-oxygen/100) for g in loop['fractions'])
     descent = depth/settings['descentRate']
     departure = descent + hold
@@ -962,14 +1054,20 @@ def cc_plan(payload):
             branch_time = number(value, 'Bailout time', 0, 1080)
         except ValueError:
             branch_time = math.inf
-    sim = ClosedCircuitSimulation(settings, loop, setpoint, branch_time)
-    sim.advance(depth, descent, loop, 'descent')
+    sim = ClosedCircuitSimulation(settings, loop, low, branch_time)
+    sim.observe(loop,'start',0,0,sim.tissues,0,0)
+    if switch:
+        sim.advance(switch_depth,switch_depth/settings['descentRate'],loop,'descent')
+        sim.setpoint = high
+        sim.observe(loop,'setpoint',sim.depth,sim.time,sim.tissues,0,sim.cns)
+    sim.advance(depth,(depth-sim.depth)/settings['descentRate'],loop,'descent')
     sim.advance(depth, hold, loop, 'hold')
     sim.ascend(loop)
     cc = dict(schedule=sim.schedule, surfaceTime=sim.time, tts=sim.time-departure,
               decoTime=sum(r['duration'] for r in sim.schedule if r['phase']=='deco'),
               diluentPPO2=sim.pressure(depth)*oxygen/100,
-              surfaceLoopPPO2=min(setpoint,sim.surface-WATER_VAPOUR))
+              surfaceLoopPPO2=loop_oxygen(sim.surface,sim.setpoint,sim.limit), bottomSetpoint=sim.setpoint,
+              setpointLow=low,setpointHigh=high,profilePoints=sim.points,settings=settings,inventory=[loop])
     try:
         bailout = oc_bailout(payload, settings, sim.branch)
     except ValueError as exc:
@@ -1196,6 +1294,7 @@ def blend(payload):
 # Error localization at the JSON boundary keeps the numerical API language-neutral.
 # Parameterized messages are translated through ordered phrase replacements.
 EN_MESSAGES = {
+'PPO₂ Low 不能大于 PPO₂ High。':'PPO₂ Low must not exceed PPO₂ High.',
 '切换时刻必须在 CC 剖面的水下部分。':'Choose a bailout time during the underwater portion of the CC profile.',
 '请添加至少一支 OC 应急气瓶。':'Add at least one OC bailout cylinder.',
 '切换深度没有符合氧分压及切换深度限制的 OC 气体。':'No OC gas meets the oxygen pressure and switch-depth limits at bailout.',
@@ -1265,6 +1364,7 @@ def handle_json(request):
         action=request.get('action','plan')
         payload=request.get('payload',{})
         if action=='plan': result=plan(payload)
+        elif action=='cc_point_metrics': result=cc_point_metrics(payload)
         elif action=='cc_plan':
             result=cc_plan(payload)
             if not result['bailout']['available']:

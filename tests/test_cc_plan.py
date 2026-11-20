@@ -78,3 +78,47 @@ class ClosedCircuitTests(unittest.TestCase):
             p.cc_plan(profile(diluentO2=100))
         self.assertGreater(p.cc_plan(profile(setpoint=.8))['cc']['surfaceTime'],
                            p.cc_plan(profile(setpoint=1.3))['cc']['surfaceTime'])
+
+    def test_dual_setpoints_and_surface_fo2_limit(self):
+        data = profile(setpointLow=.7, setpointHigh=1.3, spSwitch='descent', spDepth=12, diluentHe=35)
+        result = p.cc_plan(data)
+        cc = result['cc']
+        points = cc['profilePoints']
+        selected = next(i for i,pt in enumerate(points) if pt['phase']=='setpoint')
+        before,after = points[selected-1:selected+1]
+        self.assertAlmostEqual(after['time'],12/18)
+        self.assertEqual(before['tissues'],after['tissues'])
+        self.assertEqual([before['setpoint'],after['setpoint']],[.7,1.3])
+        self.assertTrue(all(pt['setpoint']==1.3 for pt in points[selected:]))
+        self.assertAlmostEqual(points[-1]['ppo2'],1.01325*.90)
+        self.assertEqual(points[-1]['depth'],0)
+        bo = result['bailout']
+        first = bo['profilePoints'][0]
+        cc_branch = next(pt for pt in points if abs(pt['time']-bo['startTime'])<1e-8)
+        self.assertEqual(first['tissues'],cc_branch['tissues'])
+        self.assertAlmostEqual(first['cns'],cc_branch['cns'])
+        self.assertNotIn('setpoint',first)
+        self.assertEqual(len(points[-1]['tissueGasFractions']),16)
+
+    def test_switch_options_do_not_force_high(self):
+        base = profile(setpointLow=.65,setpointHigh=1.25)
+        for mode,threshold in [('low',0),('descent',0),('descent',50)]:
+            cc = p.cc_plan(dict(base,spSwitch=mode,spDepth=threshold))['cc']
+            self.assertEqual({pt['setpoint'] for pt in cc['profilePoints']},{.65})
+        at_bottom = p.cc_plan(base)['cc']
+        event = next(pt for pt in at_bottom['profilePoints'] if pt['phase']=='setpoint')
+        self.assertEqual(event['depth'],40)
+        with self.assertRaises(ValueError):
+            p.cc_plan(dict(base,setpointLow=1.3,setpointHigh=1.0))
+
+    def test_cc_cursor_forecasts_at_depth_and_surface(self):
+        cc = p.cc_plan(profile(setpointLow=.7,setpointHigh=1.3))['cc']
+        hold = next(pt for pt in reversed(cc['profilePoints']) if pt['phase']=='hold')
+        def metrics(point):
+            return p.cc_point_metrics(dict(settings=cc['settings'],gases=cc['inventory'],point=point))
+        prediction = metrics(hold)
+        self.assertEqual(prediction['ndl']['minutes'],0)
+        self.assertAlmostEqual(prediction['projection']['tts'],cc['tts'])
+        self.assertGreater(prediction['projection']['atPlus5'],prediction['projection']['tts'])
+        surface=metrics(cc['profilePoints'][-1])
+        self.assertEqual(surface['projection']['tts'],0)

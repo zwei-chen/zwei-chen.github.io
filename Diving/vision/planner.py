@@ -162,10 +162,8 @@ def validate_environment(payload):
         settings[key] = number(raw.get(key,settings[key]), key, low, high)
     settings['decoAscentRate'] = number(raw.get('decoAscentRate', settings['ascentRate']), 'decoAscentRate', 1, 18)
     settings['ascentMode'] = raw.get('ascentMode', 'staged')
-    if settings['ascentMode'] not in ('staged', 'variable', 'constant'):
+    if settings['ascentMode'] not in ('staged', 'variable', 'constant', 'instant'):
         raise ValueError('Invalid ascent mode.')
-    if settings['ascentMode'] == 'constant':
-        settings['targetGF'] = number(raw.get('targetGF', 70), 'GF', 1, 100)
     if settings['gfLow'] > settings['gfHigh']: raise ValueError('GF Low 不能大于 GF High。')
     if settings['lastStop'] not in (3,6): raise ValueError('末站深度只能为 3 m 或 6 m。')
     if settings['ppo2Work'] > settings['ppo2Deco']: raise ValueError('底部氧分压上限不能大于减压氧分压上限。')
@@ -217,7 +215,8 @@ def validate(payload, *, mode='plan'):
     for i,row in enumerate(raw_segments):
         gas_id = str(row.get('gas',''))
         if not any(g['id']==gas_id and g['enabled'] for g in gases): raise ValueError(f'第 {i+1} 段引用了停用或不存在的气体。')
-        segments.append(dict(depth=number(row.get('depth'),f'第 {i+1} 段深度',0,150),duration=number(row.get('duration'),f'第 {i+1} 段耗时',.000001,180),gas=gas_id))
+        # segment_timings validates every duration and only synthesizes zero for instant ascents.
+        segments.append(dict(depth=row['depth'],duration=row['duration'],gas=gas_id))
     if sum(row['duration'] for row in segments) > 360: raise ValueError('计划分段总时长不能超过 360 分钟。')
     if max(row['depth'] for row in segments) == 0: raise ValueError('至少一个分段的深度须大于 0。')
     return settings,gases,segments
@@ -244,8 +243,6 @@ class Simulation:
     def pressure(self, depth): return self.surface+depth*self.metre
 
     def gf(self, depth):
-        if self.settings.get('ascentMode') == 'constant':
-            return self.settings['targetGF'] / 100
         low,high = self.settings['gfLow']/100,self.settings['gfHigh']/100
         if self.anchor is not None and self.anchor > 0: return high-(high-low)*min(1,max(0,depth/self.anchor))
         return low if self.gf_mode=='low' else high
@@ -282,7 +279,8 @@ class Simulation:
             pressures={key:self.gases[key]['pressure']-volume/self.gases[key]['size'] for key,volume in used.items()}))
 
     def advance(self, depth, duration, gas, phase, *, sample_end=True, log_leg=True):
-        if duration <= 1e-9:
+        jump = (self.settings.get('ascentMode')=='instant' and duration==0 and depth<self.depth)
+        if duration <= 1e-9 and not jump:
             if phase=='switch':
                 self.record(gas,phase)
                 self.schedule.append(dict(phase=phase,fromDepth=self.depth,depth=self.depth,duration=0,runtime=self.time,gas=gas['id'],decompression=self.anchor is not None))
@@ -319,8 +317,8 @@ class Simulation:
             self.tissues = load_tissues(self.tissues,p0,p1,dt,gas['fractions'])
             self.used[gas['id']] += rmv*(p0+p1)/2*dt
             self.max_ppo2 = max(self.max_ppo2,max(p0,p1)*gas['o2']/100)
-            if cns is None: self.cns_known=False
-            else: self.cns += cns*dt
+            if cns is not None: self.cns += cns*dt
+            elif dt > 0: self.cns_known=False
             self.otu += otu*dt
             if max(p0,p1)*gas['o2']/100 > limit+1e-8:
                 self.warn('oxygen',f"{gas['name']} 在部分深度超过所设氧分压上限。",'oxygen-'+gas['id'])
@@ -353,6 +351,8 @@ class Simulation:
         # this matches the published DecoTengu stop-release convention.
         if (self.anchor is not None or self.gf_mode=='low') and self.pressure(target)+1e-8 < ceiling(self.tissues,self.gf(target)):
             return False
+        if self.settings.get('ascentMode') == 'instant':
+            return self.pressure(target)+1e-8 >= ceiling(self.tissues,self.gf(target))
         duration = (self.depth-target)/ascent_rate(self.settings, gas['o2'])
         steps = max(1,math.ceil(duration*60))
         tissues = self.tissues
@@ -407,6 +407,24 @@ class Simulation:
             travel = min(dt, (self.depth - target) / rate)
             depth = max(target, self.depth - rate * travel)
             deficit = margin(depth, travel)
+            if deficit < 0 and self.anchor is None:
+                # Locate first contact at GF Low along the rate-limited path.
+                # The same depth anchors every following step and cursor projection.
+                early, late = 0., travel
+                if margin(self.depth, 0) < -1e-8:
+                    raise ValueError('最后一段已浅于 GF Low 允许的首站深度。请在更深处结束手动分段。')
+                while late - early > 1e-9:
+                    mid = (early + late)/2
+                    if margin(self.depth - rate*mid, mid) >= 0:
+                        early = mid
+                    else:
+                        late = mid
+                self.anchor = self.depth - rate*early
+                if early > 1e-9:
+                    self.advance(self.anchor, early, gas, 'gf_ascent', log_leg=False)
+                else:
+                    self.record(gas, 'gf_ascent')
+                continue
             if deficit >= 0:
                 if travel > 1e-9:
                     dt = travel
@@ -446,6 +464,8 @@ class Simulation:
                             shallow, deficit = guess, value
                     depth = deep
             at_target = depth <= target + 1e-9
+            if at_target and target == 0 and self.anchor is None:
+                self.gf_mode = 'high'
             self.advance(depth, dt, gas, 'gf_ascent', sample_end=at_target or next_second % 10 == 0, log_leg=False)
 
     def switch_boundaries(self, gas, target):
@@ -466,6 +486,7 @@ class Simulation:
             arrivalGF=surface_gf(self.tissues, self.pressure(self.depth)), targetGF=100*self.gf(self.depth)))
 
     def ascend_on_gf(self, gas):
+        self.gf_mode = 'low'
         while self.depth > 1e-7:
             chosen = self.best_gas(gas)
             if chosen is not gas:
@@ -487,7 +508,8 @@ class Simulation:
             if depth != target and (chosen is gas or
                     (self.gf_mode == 'low' and depth < self.settings['lastStop'] and not chosen.get('travelGas'))):
                 continue
-            path.append((depth, (start-depth)/ascent_rate(self.settings, gas['o2']), gas, 'gf_ascent'))
+            duration = 0 if self.settings.get('ascentMode')=='instant' else (start-depth)/ascent_rate(self.settings,gas['o2'])
+            path.append((depth, duration, gas, 'gf_ascent'))
             if depth != target:
                 path.append((depth, self.settings['switchTime'], chosen, 'switch'))
                 start, gas = depth, chosen
@@ -514,7 +536,8 @@ class Simulation:
             tissues, start = end_tissues, end
         return True
 
-    def ascend_variable(self, gas, stop_credit):
+    def ascend_stations(self, gas, stop_credit):
+        instant = self.settings['ascentMode']=='instant'
         self.refresh_ascent_mode(gas)
         while self.depth > 1e-7:
             target = 3 * math.floor((self.depth-1e-7)/3)
@@ -540,7 +563,10 @@ class Simulation:
 
             travel = sum(duration for _, duration, _, phase in path if phase == 'gf_ascent')
             factor = 1.
-            if not self.station_path_clear(path, factor):
+            if instant:
+                while not self.station_path_clear(path, 1):
+                    self.advance(self.depth, 1, gas, 'deco')
+            elif not self.station_path_clear(path, factor):
                 # Allocate whole minutes at the station. Adjust the travel time
                 # for the remaining fraction, so the GF peak occurs on arrival.
                 extra = 1.
@@ -563,6 +589,8 @@ class Simulation:
             for end, duration, gas, phase in path:
                 if phase == 'switch':
                     self.advance(end, duration, gas, phase)
+                elif instant:
+                    self.advance(end, 0, gas, 'ascent')
                 else:
                     start_time, start_depth = self.time, self.depth
                     self.advance(end, duration*factor, gas, phase, log_leg=False)
@@ -571,8 +599,8 @@ class Simulation:
         return gas
 
     def ascend(self, gas, stop_credit=0):
-        if self.settings.get('ascentMode') == 'variable':
-            return self.ascend_variable(gas, stop_credit)
+        if self.settings.get('ascentMode') in ('variable','instant'):
+            return self.ascend_stations(gas, stop_credit)
         if self.settings.get('ascentMode') == 'constant':
             return self.ascend_on_gf(gas)
         # A no-stop ascent is assessed at GF High before searching the GF Low anchor.
@@ -631,8 +659,8 @@ def ndl(payload):
     settings=dict(DEFAULTS)
     for key,low,high in [('gfHigh',1,100),('surfacePressure',.6,1.1),('density',.95,1.1),('ascentRate',1,18)]:
         settings[key]=number(raw.get(key,settings[key]),key,low,high)
-    if raw.get('ascentMode') == 'constant':
-        settings['gfHigh'] = number(raw.get('targetGF', 70), 'GF', 1, 100)
+    if raw.get('ascentMode') == 'instant':
+        settings['ascentMode'] = 'instant'
     point=payload.get('point',{})
     depth=number(point.get('depth'),'depth',0,150)
     rows=point.get('tissues',[])
@@ -794,7 +822,7 @@ def plan(payload, auto_ascent=True):
         if gas['id'] != current['id']:
             if auto_ascent: simulation.advance(simulation.depth,settings['switchTime'],gas,'switch')
             else: simulation.record(gas,'switch')
-        rate=(segment['depth']-simulation.depth)/segment['duration']
+        rate=(segment['depth']-simulation.depth)/segment['duration'] if segment['duration'] else 0
         if auto_ascent and rate > settings['descentRate']+1e-8: simulation.warn('descent','手动分段的下降速度超过设定上限。')
         if auto_ascent and -rate > ascent_rate(settings,gas['o2'])+1e-8: simulation.warn('ascent','手动分段的上升速度超过设定上限。')
         simulation.advance(segment['depth'],segment['duration'],gas,'segment')
@@ -935,6 +963,7 @@ def cc_point_metrics(payload):
     point = payload['point']
     depth = number(point['depth'],'depth',0,150)
     sp = number(point['setpoint'],'Setpoint',.4,1.6)
+    ascent_sp = number(payload['settings'].get('setpointDeco',sp),'PPO₂ Deco',.4,1.6)
     gas['inertRatios'] = tuple(f/sum(gas['fractions']) for f in gas['fractions'])
     tissues = [(n,h) for n,h,*_ in point['tissues']]
     def probe():
@@ -943,18 +972,20 @@ def cc_point_metrics(payload):
         sim.depth,sim.tissues = depth,list(tissues)
         return sim
     ndl_sim = probe()
+    ndl_sim.setpoint = ascent_sp
     ambient = ndl_sim.pressure(depth)
     minutes = 99
     for elapsed in range(100):
         if not ndl_sim.can_ascend(0,gas) or ceiling(ndl_sim.tissues,settings['gfHigh']/100)>ambient+1e-8:
             minutes = max(0,elapsed-1)
             break
-        ndl_sim.tissues=ndl_sim.tissue_step(ndl_sim.tissues,ambient,ambient,1,gas)
+        ndl_sim.tissues = load_cc_tissues(ndl_sim.tissues,ambient,ambient,1,gas['inertRatios'],sp,ndl_sim.limit)
     values=[]
     reason=''
     for delay in (0,5):
         sim=probe()
         sim.tissues=sim.tissue_step(sim.tissues,ambient,ambient,delay,gas)
+        sim.setpoint = ascent_sp
         sim.anchor,sim.gf_mode=point.get('gfAnchor'),point.get('gfMode','high')
         try:
             sim.ascend(gas, stop_credit=(point.get('stopElapsed',0)+delay if sim.anchor is not None else 0))
@@ -1043,6 +1074,9 @@ def cc_plan(payload):
     inputs = payload.get('settings', {})
     settings, (loop,) = validate_environment(dict(settings={k:inputs[k] for k in allowed if k in inputs}, gases=[loop]))
     settings['fo2Limit'] = 100 if legacy else number(payload.get('fo2Limit',90),'FO₂ limit',60,96)
+    deco_sp = payload.get('setpointDeco')
+    if deco_sp not in ('',None):
+        settings['setpointDeco'] = number(deco_sp,'PPO₂ Deco',.4,1.6)
     loop['inertRatios'] = tuple(g/(1-oxygen/100) for g in loop['fractions'])
     descent = depth/settings['descentRate']
     departure = descent + hold
@@ -1062,11 +1096,15 @@ def cc_plan(payload):
         sim.observe(loop,'setpoint',sim.depth,sim.time,sim.tissues,0,sim.cns)
     sim.advance(depth,(depth-sim.depth)/settings['descentRate'],loop,'descent')
     sim.advance(depth, hold, loop, 'hold')
+    bottom_sp = sim.setpoint
+    if settings.get('setpointDeco',bottom_sp) != bottom_sp:
+        sim.setpoint = settings['setpointDeco']
+        sim.observe(loop,'setpoint',sim.depth,sim.time,sim.tissues,0,sim.cns)
     sim.ascend(loop)
     cc = dict(schedule=sim.schedule, surfaceTime=sim.time, tts=sim.time-departure,
               decoTime=sum(r['duration'] for r in sim.schedule if r['phase']=='deco'),
               diluentPPO2=sim.pressure(depth)*oxygen/100,
-              surfaceLoopPPO2=loop_oxygen(sim.surface,sim.setpoint,sim.limit), bottomSetpoint=sim.setpoint,
+              surfaceLoopPPO2=loop_oxygen(sim.surface,sim.setpoint,sim.limit), bottomSetpoint=bottom_sp,
               setpointLow=low,setpointHigh=high,profilePoints=sim.points,settings=settings,inventory=[loop])
     try:
         bailout = oc_bailout(payload, settings, sim.branch)
@@ -1121,8 +1159,10 @@ def waypoint_timings(payload):
         travel=0
         if depth!=previous:
             kind='descent' if depth>previous else 'ascent'
-            rate=segment_rate(payload,kind,gas)
-            travel=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
+            rate = None
+            if not (mode=='plan' and kind=='ascent' and payload.get('settings',{}).get('ascentMode')=='instant'):
+                rate=segment_rate(payload,kind,gas)
+                travel=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)
             segments.append(dict(depth=depth,duration=travel,rate=rate,gas=gas,kind=kind))
         if hold>0:
             segments.append(dict(depth=depth,duration=hold,rate=None,gas=gas,kind='hold'))
@@ -1162,6 +1202,8 @@ def segment_timings(payload):
         if kind=='hold':
             duration=number(row.get('duration'),f'第 {i+1} 段耗时',.000001,180)
             rate=None
+        elif mode=='plan' and kind=='ascent' and payload.get('settings',{}).get('ascentMode')=='instant':
+            rate, duration = None, 0
         elif default_rate:
             rate=segment_rate(payload,kind,str(row.get('gas','')))
             duration=number(abs(depth-previous)/rate,f'第 {i+1} 段耗时',.000001,180)

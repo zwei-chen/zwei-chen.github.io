@@ -32,6 +32,7 @@ try {
       if (old >= .7 && old <= 1.6) draft.fields.setpointHigh = old;
       else if (old >= .4 && old < .7) Object.assign(draft.fields,{setpointLow:old,spSwitch:'low'});
     }
+    if (draft.fields?.spSwitch === 'low' && !('setpointDeco' in draft.fields)) draft.fields.setpointDeco = '';
     for (const [name,value] of Object.entries(draft.fields || {})) {
       const field = form.elements.namedItem(name);
       if (field) field.value = value;
@@ -133,7 +134,7 @@ function render(result) {
   const {cc,bailout:bo}=result;
   showProfile('cc');
   main.innerHTML=`<h2>${t('CC 主计划','CC main plan')}</h2>${timeSummary(cc)}
-    <p class="hint">PPO₂ Low / High ${f(cc.setpointLow,2)} / ${f(cc.setpointHigh,2)} bar · ${t('底部稀释气 pO₂','Diluent pO₂ at depth')} ${f(cc.diluentPPO2,2)} bar · ${t('水面模拟回路 pO₂','Modeled surface loop pO₂')} ${f(cc.surfaceLoopPPO2,2)} bar</p>
+    <p class="hint">PPO₂ Low / High / Deco ${f(cc.setpointLow,2)} / ${f(cc.setpointHigh,2)} / ${f(cc.settings.setpointDeco ?? cc.bottomSetpoint,2)} bar · ${t('底部稀释气 pO₂','Diluent pO₂ at depth')} ${f(cc.diluentPPO2,2)} bar · ${t('水面模拟回路 pO₂','Modeled surface loop pO₂')} ${f(cc.surfaceLoopPPO2,2)} bar</p>
     ${cc.diluentPPO2>cc.bottomSetpoint?`<p class="warning">${t('底部稀释气氧分压高于设定点。冲洗回路时会偏离此恒定设定点模拟。','Diluent pO₂ at depth exceeds the setpoint. A diluent flush would depart from this constant-setpoint simulation.')}</p>`:''}
     ${schedule(cc,{})}`;
   main.hidden=false;
@@ -164,11 +165,11 @@ form.addEventListener('submit',async(event)=>{
   event.preventDefault();
   if(!engine.ready||busy)return;
   const expected=revision, fields=Object.fromEntries(new FormData(form));
-  const {depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,...settings}=fields;
+  const {depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,setpointDeco,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,...settings}=fields;
   busy=true; calculate.disabled=true; error.hidden=true;
   status.textContent=t('正在计算…','Calculating…');
   try {
-    const result=await engine.call('cc_plan',{depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,settings,gases:cylinders.map(namedCylinder)});
+    const result=await engine.call('cc_plan',{depth,duration,diluentO2,diluentHe,setpointLow,setpointHigh,setpointDeco,spSwitch,spDepth,fo2Limit,bailoutTime,bailoutSCR,settings,gases:cylinders.map(namedCylinder)});
     if(expected!==revision)return;
     render(result);
     status.textContent=t('计算完成。','Calculation complete.');

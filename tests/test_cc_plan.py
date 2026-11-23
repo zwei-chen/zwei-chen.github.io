@@ -122,3 +122,30 @@ class ClosedCircuitTests(unittest.TestCase):
         self.assertGreater(prediction['projection']['atPlus5'],prediction['projection']['tts'])
         surface=metrics(cc['profilePoints'][-1])
         self.assertEqual(surface['projection']['tts'],0)
+
+    def test_deco_setpoint_starts_on_ascent_and_applies_to_projections(self):
+        base = profile(depth=100, duration=25, diluentO2=10, diluentHe=70,
+                       setpointLow=.7, setpointHigh=1.3, gases=[])
+        old = p.cc_plan(base)['cc']
+        cc = p.cc_plan(dict(base,setpointDeco=1.6))['cc']
+        self.assertEqual(cc['bottomSetpoint'],1.3)
+        hold = next(pt for pt in reversed(cc['profilePoints']) if pt['phase']=='hold')
+        self.assertEqual(hold['tissues'],next(pt['tissues'] for pt in reversed(old['profilePoints']) if pt['phase']=='hold'))
+        changed = next(pt for pt in cc['profilePoints'] if pt['setpoint']==1.6)
+        self.assertEqual((changed['time'],changed['tissues'],changed['cns']),(hold['time'],hold['tissues'],hold['cns']))
+        self.assertEqual({r['setpoint'] for r in cc['schedule'] if r['phase'] in ('ascent','deco')},{1.6})
+        self.assertLess(cc['tts'],old['tts'])
+        self.assertAlmostEqual(cc['profilePoints'][-1]['ppo2'],.90*cc['settings']['surfacePressure'])
+        metrics=p.cc_point_metrics(dict(settings=cc['settings'],gases=cc['inventory'],point=hold))
+        self.assertAlmostEqual(metrics['projection']['tts'],cc['tts'])
+        delayed=p.cc_plan(dict(base,setpointDeco=1.6,duration=30))['cc']
+        self.assertAlmostEqual(metrics['projection']['atPlus5'],delayed['tts'])
+
+    def test_deco_setting_is_optional_and_does_not_change_bailout_at_bottom(self):
+        base = profile(setpointLow=.7,setpointHigh=1.3)
+        old = p.cc_plan(base)
+        self.assertEqual(p.cc_plan(dict(base,setpointDeco=''))['cc'],old['cc'])
+        changed = p.cc_plan(dict(base,setpointDeco=1.6))
+        self.assertEqual(changed['bailout'],old['bailout'])
+        with self.assertRaises(ValueError):
+            p.cc_plan(dict(base,setpointDeco=1.7))

@@ -16,14 +16,15 @@
           {% include diving/cc-number.html name="diluentHe" zh="稀释气 He" en="Diluent He" unit="%" min="0" max="99" value="0" %}
           {% include diving/cc-number.html name="setpointLow" zh="PPO₂ Low 设定点" en="PPO₂ Low setpoint" unit="bar" min=".4" max="1.3" value=".7" %}
           {% include diving/cc-number.html name="setpointHigh" zh="PPO₂ High 设定点" en="PPO₂ High setpoint" unit="bar" min=".7" max="1.6" value="1.3" %}
+          {% include diving/cc-number.html name="setpointDeco" zh="PPO₂ Deco 减压设定点" en="PPO₂ Deco setpoint" unit="bar" min=".4" max="1.6" value="1.6" optional=true %}
           <label>{% if en %}Switch to High{% else %}切换到 High{% endif %}<select name="spSwitch">
             <option value="bottom">{% if en %}On arrival at the bottom{% else %}到达底部时{% endif %}</option>
             <option value="descent">{% if en %}At a descent depth{% else %}在指定下潜深度{% endif %}</option>
-            <option value="low">{% if en %}Stay on Low{% else %}全程使用 Low{% endif %}</option>
+            <option value="low">{% if en %}Use Low at the bottom{% else %}底部沿用 Low{% endif %}</option>
           </select></label>
           <label id="sp-depth-field" hidden>{% if en %}High switch depth (0 = off){% else %}High 切换深度（0 表示关闭）{% endif %}<span>m</span><input name="spDepth" type="number" min="0" max="150" step="any" value="0" disabled></label>
         </div>
-        <p class="hint">{% if en %}This simulation starts on Low. Once selected, High remains active through ascent. Set the switch to match your dive. {% else %}模拟从 Low 开始，切到 High 后沿用至出水。可按计划指定切换时机。{% endif %}<a href="https://www.divesoft.com/en/manuals/ccr-liberty-manual/ccr-liberty-manual-02" target="_blank" rel="noopener">Divesoft §2.4.2 / §2.6.3</a></p>
+        <p class="hint">{% if en %}The loop starts on Low and switches to Deco when leaving the bottom. Leave Deco blank to ascend on the current setpoint. Shallow loop pO₂ is limited by the FO₂ setting. {% else %}模拟从 Low 开始，离开底部时切至 Deco。Deco 留空则沿用当时的设定点。浅水区回路 pO₂ 受 FO₂ 上限约束。{% endif %}<a href="https://www.divesoft.com/en/manuals/ccr-liberty-manual/ccr-liberty-manual-02" target="_blank" rel="noopener">Divesoft §2.4.2 / §2.6.3</a></p>
         <div class="field-grid">
           {% include diving/cc-number.html name="gfLow" zh="GF Low" en="GF Low" unit="%" min="1" max="100" value="50" %}
           {% include diving/cc-number.html name="gfHigh" zh="GF High" en="GF High" unit="%" min="1" max="100" value="70" %}

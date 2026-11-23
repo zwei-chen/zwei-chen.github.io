@@ -44,7 +44,7 @@ for language,prefix in [('zh',''),('en','en/')]:
         assert target in page.links,path
         for url in page.assets:assert (root/urlsplit(url).path.lstrip('/')).is_file(),(path,url)
         if tool in ('vision','plan','constant-gf'):
-            expected=(['targetGF'] if tool=='constant-gf' else []) + ['gfHigh','gfLow']
+            expected=['gfHigh','gfLow']
             if tool!='vision':expected+=['ascentRate','decoAscentRate','descentRate']
             expected+=['waterType','sacWork']
             assert page.primary==expected,(path,page.primary)
@@ -54,14 +54,19 @@ for language,prefix in [('zh',''),('en','en/')]:
             assert {'profile-chart','time-cursor','play-profile','tissue-chart','compartment-grid'} <= set(page.ids),path
             assert ('open-gf-window' in page.ids) == (tool=='plan'),path
             assert ('gf-pressure-chart' in page.ids) == (tool=='plan'),path
+        if tool=='plan':
+            oc_cursor=[key for key in page.ids if key.startswith('cursor-')]
+        if tool=='constant-gf':
+            assert 'targetGF' not in page.names,path
+            assert [key for key in page.ids if key.startswith('cursor-')]==oc_cursor,path
         if tool=='cc-plan':
-            assert {'setpointLow','setpointHigh','spSwitch','spDepth','fo2Limit'} <= set(page.names),path
+            assert {'setpointLow','setpointHigh','setpointDeco','spSwitch','spDepth','fo2Limit'} <= set(page.names),path
             assert 'cursor-setpoint' in page.ids,path
         if tool=='plan':
             ids=list(page.ids)
             assert ids.index('bottom-duration') < ids.index('gas-list') and ids.index('segment-list') < ids.index('gas-list'),path
             assert 'planning-inputs' in page.ids['gas-list'] and not {'bottom-inputs','custom-inputs'}.intersection(page.ids['gas-list']),path
-            for label in (('自动模式','手动模式') if language=='zh' else ('Automatic mode','Manual mode')):
+            for label in (('自动模式','手动模式','瞬移上升（测试）') if language=='zh' else ('Automatic mode','Manual mode','Instant ascent (simulation)')):
                 assert label in page.text,(path,label)
         if language=='en':
             text=''.join(page.text).replace('中文','')

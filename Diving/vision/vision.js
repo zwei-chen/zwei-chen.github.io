@@ -8,7 +8,7 @@ const planPage=document.documentElement.dataset.tool==='plan';
 const form=$('#planner-form'),button=$('#calculate-plan'),status=$('#engine-status');
 const fields=[...form.querySelectorAll('[name]')];
 function readSettings(){
-  return Object.fromEntries(fields.map(field=>[field.name,field.name==='ascentMode'?(field.checked?'variable':'staged'):field.value]));
+  return Object.fromEntries(fields.map(field=>[field.name,field.value]));
 }
 const defaults=readSettings();
 const storageKey=constantGF?'dive-vision-constant-gf-v1':visual?'dive-vision-profile-v1':'dive-vision-plan-v1';
@@ -82,6 +82,7 @@ function describeSegment(segment,fromDepth){
   return {kind,depth,route,badge:`${icons[kind]} ${names[kind]}`,depthLabel:kind==='hold'?t('停留深度','Hold depth'):t('目标深度','Target depth'),durationLabel};
 }
 function segmentTimingField(segment,index,description){
+  if(instantAscent() && description.kind==='ascent')return `<label>${t('上升耗时','Ascent time')} <span>min</span><input type="number" value="0" readonly></label>`;
   const moving=['ascent','descent'].includes(description.kind),automatic=moving&&state.useDefaultRates===true;
   return automatic?'':visual&&moving
       ?`<label>${segment.kind==='ascent'?t('上升速度','Ascent rate'):t('下潜速度','Descent rate')} <span>m/min</span>${input(segment.rate??'',.1,60,'rate',index,'segment')}</label>`
@@ -121,7 +122,9 @@ async function setDefaultRates(enabled){
   const expected=revision;
   setBusy(true);error();
   try{
-    const response=await engine.call('segments',{...state,mode:visual?'vision':'plan',useDefaultRates:true,waypoints:enabled?undefined:state.waypoints});
+    // Converting editors must preserve usable finite travel times when the experiment is later turned off.
+    const settings=instantAscent()?{...state.settings,ascentMode:'staged'}:state.settings;
+    const response=await engine.call('segments',{...state,settings,mode:visual?'vision':'plan',useDefaultRates:true,waypoints:enabled?undefined:state.waypoints});
     if(expected!==revision)return;
     if(enabled){
       if(response.waypoints.length>12)throw new Error(t('默认速度模式最多支持 12 个目标深度。','Default speed mode supports up to 12 target depths.'));
@@ -144,6 +147,7 @@ function renderSegments(){
   $('#use-default-rates').checked=state.useDefaultRates===true;
   const speedHint=$('#default-speed-summary');speedHint.hidden=state.useDefaultRates!==true;
   speedHint.textContent=visual?t('默认下潜 18 m/min · 默认上升 10 m/min','Default descent 18 m/min · Default ascent 10 m/min'):t(`使用主要参数：下潜 ${f(form.elements.descentRate.value)} m/min · 上升 ${f(form.elements.ascentRate.value)} m/min`,`Main settings: descent ${f(form.elements.descentRate.value)} m/min · ascent ${f(form.elements.ascentRate.value)} m/min`);
+  if(instantAscent())speedHint.textContent=t(`下潜 ${f(form.elements.descentRate.value)} m/min · 上升移动 0 min`,`Descent ${f(form.elements.descentRate.value)} m/min · ascent travel 0 min`);
   if(state.useDefaultRates===true){
     if(automaticSegments())renderWaypoints();
     else $('#segment-list').innerHTML=`<p class="hint">${t('正在整理目标深度…','Preparing target depths…')}</p>`;
@@ -164,7 +168,11 @@ async function refreshTimings(hydrate=false){
   if(bottomOnly())return true;
   const expected=revision,id=++timingRequest;
   try{
-    const response=await engine.call('segments',{segments:state.segments,waypoints:state.waypoints,settings:state.settings,gases:state.gases,useDefaultRates:state.useDefaultRates,mode:visual?'vision':'plan'});
+    // Migrate stored durations at their original rates before applying instant travel.
+    const migrateAtNormalRates=hydrate&&instantAscent()&&!automaticSegments()
+      &&(typeof state.useDefaultRates!=='boolean'||state.segments.some(s=>s.kind==='ascent'&&s.duration==null&&s.rate!=null));
+    const settings=migrateAtNormalRates?{...state.settings,ascentMode:'staged'}:state.settings;
+    const response=await engine.call('segments',{segments:state.segments,waypoints:state.waypoints,settings,gases:state.gases,useDefaultRates:state.useDefaultRates,mode:visual?'vision':'plan'});
     if(expected!==revision||id!==timingRequest)return false;
     if(hydrate){
       if(typeof state.useDefaultRates!=='boolean'){
@@ -173,11 +181,11 @@ async function refreshTimings(hydrate=false){
         response.segments.forEach((resolved,index)=>{const saved=state.segments[index];if(!response.useDefaultRates&&saved.useDefaultRate===true&&resolved.kind!=='hold'){saved.rate=resolved.rate;saved.duration=resolved.duration;}delete saved.useDefaultRate;});
         state.useDefaultRates=response.useDefaultRates;
       }
-      if(!automaticSegments())response.segments.forEach((segment,index)=>{const saved=state.segments[index];if(visual&&segment.kind!=='hold'&&saved.rate==null)saved.rate=segment.rate;if(!visual&&saved.duration==null)saved.duration=segment.duration;});
+      if(!automaticSegments())response.segments.forEach((segment,index)=>{const saved=state.segments[index];if(visual&&segment.kind!=='hold'&&saved.rate==null)saved.rate=segment.rate;if(!visual&&saved.duration==null&&segment.duration>0)saved.duration=segment.duration;});
       if(state.useDefaultRates===true&&!state.waypoints)state.waypoints=response.waypoints;
       renderSegments();save();
     }
-    if(automaticSegments()&&!response.waypointTimings)return refreshTimings();
+    if(migrateAtNormalRates||(automaticSegments()&&!response.waypointTimings))return refreshTimings();
     renderTimings(response);
     return true;
   }catch(e){if(hydrate&&expected===revision)error(e.message);return false;}
@@ -186,11 +194,22 @@ function renderGasInfo(){
   if(!result||result.gasSource==='generated')return;
   result.gasDetails.forEach((info,index)=>{const output=$(`[data-gas-info="${index}"]`);if(output)output.textContent=`N₂ ${f(info.n2,2)}% · ${t('底部 MOD','Working MOD')} ${f(info.mod)} m · ${t('减压 MOD','Deco MOD')} ${f(info.decoMod)} m`+(result.gases[index].travelGas?' · '+t('旅行气交接','Travel switch')+' '+f(result.gases[index].switchDepth,2)+' m':'');});
 }
+function instantAscent(){return planPage && form.elements.ascentMode.value==='instant';}
+function updateRateInputs(){
+  if(!planPage)return;
+  for(const field of [form.elements.ascentRate,form.elements.decoAscentRate]){
+    field.disabled=false;
+    if(instantAscent()){
+      if(!field.validity.valid)field.value=field.defaultValue;
+      field.disabled=true;
+    }
+  }
+}
 function renderInputs(){fields.forEach(field=>{
-    if(field.name==='ascentMode')field.checked=state.settings.ascentMode==='variable';
-    else field.value=state.settings[field.name]??(field.name==='decoAscentRate'?state.settings.ascentRate:null)??defaults[field.name];
-  });if(!state.settings.waterType){const density=Number(form.elements.density.value);form.elements.waterType.value=density===1?'fresh':density===1.03?'sea':'custom';}renderGases();renderSegments();}
+    field.value=state.settings[field.name]??(field.name==='decoAscentRate'?state.settings.ascentRate:null)??defaults[field.name];
+  });updateRateInputs();if(!state.settings.waterType){const density=Number(form.elements.density.value);form.elements.waterType.value=density===1?'fresh':density===1.03?'sea':'custom';}renderGases();renderSegments();}
 form.addEventListener('input',event=>{const x=event.target;
+  if(x.name==='ascentMode'){updateRateInputs();renderSegments();changed();return;}
   if(x.id==='bottom-depth'||x.id==='bottom-duration'){
     state.bottom[x.id==='bottom-depth'?'depth':'duration']=x.value;changed();return;
   }
@@ -225,9 +244,9 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(!engine.r
 });
 $('#retry-engine').addEventListener('click',()=>{$('#retry-engine').hidden=true;engine.start();});
 $('#cancel-calculate').addEventListener('click',()=>{revision++;engine.fail(t('本次计算已取消，可重新加载。','Calculation cancelled. Reload when ready.'));});
-function phase(row){if(row.phase==='gf_ascent')return constantGF?t('连续上升','Continuous ascent'):t('站间上升','Ascent leg');if(row.phase==='switch')return row.decompression?t('减压换气','Deco gas switch'):t('切换气体','Gas switch');if(row.phase==='deco')return t('减压停留','Deco stop');if(row.phase==='safety')return t('附加停留','Optional stop');if(row.phase==='ascent')return t('自动上升','Auto ascent');return row.depth>row.fromDepth?t('下潜','Descent'):row.depth<row.fromDepth?t('上升','Ascent'):t('停留','Hold');}
+function phase(row){if(result?.settings.ascentMode==='instant' && row.duration===0 && row.depth<row.fromDepth)return t('瞬移上升','Instant ascent');if(row.phase==='gf_ascent')return constantGF?t('连续上升','Continuous ascent'):t('站间上升','Ascent leg');if(row.phase==='switch')return row.decompression?t('减压换气','Deco gas switch'):t('切换气体','Gas switch');if(row.phase==='deco')return t('减压停留','Deco stop');if(row.phase==='safety')return t('附加停留','Optional stop');if(row.phase==='ascent')return t('自动上升','Auto ascent');return row.depth>row.fromDepth?t('下潜','Descent'):row.depth<row.fromDepth?t('上升','Ascent'):t('停留','Hold');}
 function renderResult(){const s=result.summary;renderStandardGases();renderGasInfo();renderTimings(result);
-  const adaptive=result.settings.ascentMode!=='staged';
+  const adaptive=['variable','constant'].includes(result.settings.ascentMode);
   const showPeak=constantGF||visual;
   $('#metric-deco-label').textContent=showPeak?t('最高 GF99','Peak GF99'):t('减压停留','Deco stops');
   $('#metric-deco-unit').textContent=showPeak?'%':t('分钟 · min','minutes · min');
@@ -236,7 +255,8 @@ function renderResult(){const s=result.summary;renderStandardGases();renderGasIn
   for(const [key,value] of Object.entries({depth:s.maxDepth,runtime:s.runtime,deco:showPeak?s.maxGF99:s.decoTime,tts:visual?s.endDepth:s.tts}))$(`#metric-${key}`).textContent=f(value);
   $('#metric-cns').textContent=s.cns===null?t('超出估算范围','Out of range'):f(s.cns)+' %';$('#metric-otu').textContent=f(s.otu);$('#metric-ppo2').textContent=f(s.maxPPO2,2)+' bar';
   $('#profile-caption').textContent=visual?`GF ${f(result.settings.gfLow,0)}/${f(result.settings.gfHigh,0)} · ${(state.useDefaultRates?t('按默认速度连接目标深度','Target depths connected at default speeds'):t('按分段速度模拟','Simulated at per-segment speeds'))}`:`GF ${f(result.settings.gfLow,0)}/${f(result.settings.gfHigh,0)} · ${s.firstStop===null?t('无强制减压停留','No mandatory deco stops'):t('首次减压停留','First deco stop')+' '+f(s.firstStop)+' m'}`;
-  if(constantGF)$('#profile-caption').textContent=t('连续上升 · 目标 GF','Continuous ascent · target GF')+' '+f(result.settings.targetGF)+'%';
+  if(constantGF)$('#profile-caption').textContent='GF '+f(result.settings.gfLow)+'/'+f(result.settings.gfHigh)+' · '+t('沿减压上限连续上升','Continuous ceiling ascent');
+  else if(result.settings.ascentMode==='instant')$('#profile-caption').textContent=t('瞬移上升（测试）','Instant ascent (simulation)')+' · GF '+f(result.settings.gfLow)+'/'+f(result.settings.gfHigh);
   else if(adaptive)$('#profile-caption').textContent='GF '+f(result.settings.gfLow)+'/'+f(result.settings.gfHigh)+' · '+t('站间变速上升','Variable ascent between stations');
   $('#plan-results').hidden=false;$('#export-chart').disabled=false;$('#play-profile').disabled=false;
   $('#plan-warnings').innerHTML=result.warnings.map(w=>`<p class="warning">${esc(w.message)}</p>`).join('');
@@ -245,7 +265,7 @@ function renderResult(){const s=result.summary;renderStandardGases();renderGasIn
   $('#gas-summary').innerHTML=result.gases.filter(g=>g.enabled&&(result.gasSource!=='generated'||g.used>0)).map(g=>{const info=result.gasDetails.find(x=>x.id===g.id);return `<div class="gas-use"><strong>${esc(g.name)} <small>O₂ ${f(g.o2)}% / He ${f(g.he)}%</small></strong><span class="${g.remaining<result.settings.reserve?'low':''}">${t('余压','Remaining')} ${f(g.remaining)} bar</span><small>${t('用量','Used')} ${f(g.used,0)} L · ${t('容量','Size')} ${g.cylinderCount?g.cylinderCount+' × ':''}${f(g.size)} L</small><small>MOD ${f(info.mod)} m</small><div class="gas-bar" aria-label="${t('气瓶剩余压力比例','Remaining cylinder pressure')}"><span style="width:${Math.max(0,Math.min(100,g.remaining/g.pressure*100))}%;--gas-color:${COLORS[result.gases.indexOf(g)]}"></span></div></div>`;}).join('');
   profileView.setData(result);
 }
-function rows(){const adaptive=result.settings.ascentMode!=='staged';const gases=Object.fromEntries(result.gases.map(g=>[g.id,g.name]));return [[t('阶段','Phase'),t('深度(m)','Depth(m)'),t('耗时(min)','Duration(min)'),t('累计(min)','Runtime(min)'),t('气体','Gas'),...adaptive?[t('平均上升速度 (m/min)','Mean ascent (m/min)'),'GF99 (%)',t('目标 GF (%)','Target GF (%)')]:[]],...result.schedule.map(r=>[phase(r),r.depth,r.duration,r.runtime,gases[r.gas],...adaptive?[r.meanAscentRate??'',r.arrivalGF??'',r.targetGF??'']:[]])];}
+function rows(){const adaptive=['variable','constant'].includes(result.settings.ascentMode);const gases=Object.fromEntries(result.gases.map(g=>[g.id,g.name]));return [[t('阶段','Phase'),t('深度(m)','Depth(m)'),t('耗时(min)','Duration(min)'),t('累计(min)','Runtime(min)'),t('气体','Gas'),...adaptive?[t('平均上升速度 (m/min)','Mean ascent (m/min)'),'GF99 (%)',t('目标 GF (%)','Target GF (%)')]:[]],...result.schedule.map(r=>[phase(r),r.depth,r.duration,r.runtime,gases[r.gas],...adaptive?[r.meanAscentRate??'',r.arrivalGF??'',r.targetGF??'']:[]])];}
 $('#copy-plan').addEventListener('click',async()=>{if(!result)return;try{await navigator.clipboard.writeText('Dive Vision · '+t('学习模拟','Learning simulation')+'\n'+rows().map(r=>r.join('\t')).join('\n')+'\n'+result.warnings.map(w=>w.message).join('\n'));$('#copy-plan').textContent=t('已复制 ✓','Copied ✓');setTimeout(()=>$('#copy-plan').textContent=t('复制计划','Copy plan'),2000);}catch{error(t('剪贴板不可用，请使用导出 CSV。','Clipboard unavailable. Use Export CSV.'));}});
 $('#export-plan').addEventListener('click',()=>{if(!result)return;const cell=x=>'"'+String(x).replace(/^[=+@-]/,"'$&").replaceAll('"','""')+'"';download('\uFEFF'+[[t('学习模拟，实际潜水前须独立核对。','Learning simulation. Independently verify before real diving.')],...rows(),...result.warnings.map(w=>[w.message])].map(r=>r.map(cell).join(',')).join('\r\n'),'Dive-Vision-plan.csv','text/csv;charset=utf-8');});
 const modelButton=document.createElement('button');modelButton.type='button';modelButton.className='text-button';modelButton.id='model-help';modelButton.textContent=t('模型说明','Model notes');$('.page-heading').append(modelButton);modelButton.addEventListener('click',()=>$('#model-dialog').showModal());$('#close-model').addEventListener('click',()=>$('#model-dialog').close());

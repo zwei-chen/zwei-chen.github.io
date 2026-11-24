@@ -74,7 +74,7 @@ export function createProfileView(engine){
     try{
       const p=snapshot.points[index];
       const cc=p.setpoint!=null;
-      const data=await engine.call(cc?'cc_point_metrics':'point_metrics',{settings:cc?snapshot.loopSettings:snapshot.settings,point:{depth:p.depth,tissues:p.tissues,gas:p.gas,setpoint:p.setpoint,gfAnchor:p.gfAnchor,gfMode:p.gfMode,stopElapsed:p.stopElapsed},gases:cc?snapshot.gases.filter(g=>g.id===p.gas):snapshot.gases.filter(g=>g.id!==snapshot.loopId)});
+      const data=await engine.call(cc?'cc_point_metrics':'point_metrics',{settings:cc?snapshot.loopSettings:snapshot.settings,point:{depth:p.depth,tissues:p.tissues,gas:p.gas,setpoint:p.setpoint,gfAnchor:p.gfAnchor,gfMode:p.gfMode,stopElapsed:p.stopElapsed,remainingPlanTTS:p.remainingPlanTTS},gases:cc?snapshot.gases.filter(g=>g.id===p.gas):snapshot.gases.filter(g=>g.id!==snapshot.loopId)});
       if(result===snapshot){pointMetricsCache.set(index,data);if(selectedPoint===index)showPointMetrics(data);}
     }catch(e){if(result===snapshot&&selectedPoint===index){for(const id of ['ndl','at-plus-five','delta-plus-five']){const output=$(`#cursor-${id}`);output.textContent='—';output.title=e.message;output.removeAttribute('aria-busy');}$('#point-projection-hint').textContent=projectionHint()+' '+e.message;}}
     finally{pointMetricsBusy=false;if(pointMetricsPending)calculatePointMetrics();}

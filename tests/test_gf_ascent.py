@@ -23,6 +23,45 @@ class CeilingAscentTests(unittest.TestCase):
             if row['phase'] == 'deco':
                 self.assertEqual(row['duration'], int(row['duration']))
 
+    def test_stop_design_is_independent_of_deco_gas_travel_rate(self):
+        for mode in ('staged', 'variable'):
+            for design_rate in (10, 8):
+                with self.subTest(mode=mode, design_rate=design_rate):
+                    data = profile(mode)
+                    data['settings'].update(ascentRate=design_rate, decoAscentRate=design_rate)
+                    reference = p.plan(data)
+                    data['settings']['decoAscentRate'] = 3
+                    actual = p.plan(data)
+                    def stops(result):
+                        return [(r['depth'], r['duration']) for r in result['schedule'] if r['phase']=='deco']
+                    self.assertEqual(stops(actual), stops(reference))
+                    self.assertEqual(actual['summary']['gfAnchor'], reference['summary']['gfAnchor'])
+                    legs = [r for r in actual['schedule'] if r['phase'] in ('ascent','gf_ascent') and r['gas']!='air']
+                    self.assertTrue(legs)
+                    for r in legs:
+                        rate = (r['fromDepth']-r['depth'])/r['duration']
+                        if mode=='staged':
+                            self.assertAlmostEqual(rate, 3)
+                        else:
+                            self.assertLessEqual(rate, 3+1e-7)
+                    self.assertGreater(actual['summary']['tts'], reference['summary']['tts'])
+                    self.assertGreater(actual['summary']['gasUsed'], reference['summary']['gasUsed'])
+                    for pt in actual['points']:
+                        if pt['phase'] in ('ascent','gf_ascent','deco'):
+                            self.assertLessEqual(pt['ceiling'], pt['depth']+1e-5)
+                    mid = next(pt for pt in actual['points'] if pt['phase']=='deco' and pt['depth']==9)
+                    metrics = p.point_metrics(dict(settings=actual['settings'], gases=actual['gases'], point=mid))
+                    self.assertAlmostEqual(metrics['projection']['tts'], actual['summary']['runtime']-mid['time'])
+                    self.assertIsNotNone(metrics['projection']['atPlus5'])
+
+    def test_fixed_stops_reject_a_travel_rate_that_crosses_the_actual_ceiling(self):
+        data = profile('staged')
+        data['settings'].update(ascentRate=2, decoAscentRate=2)
+        self.assertEqual(p.plan(data)['summary']['endDepth'], 0)
+        data['settings']['decoAscentRate'] = 18
+        with self.assertRaisesRegex(ValueError, 'GF 上限'):
+            p.plan(data)
+
     def test_waypoint_timing_uses_enabled_mode_and_gas(self):
         data = profile('staged')
         data.update(useDefaultRates=True, mode='plan', waypoints=[

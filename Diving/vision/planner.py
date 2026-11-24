@@ -346,14 +346,14 @@ class Simulation:
     def tissue_step(self, tissues, p0, p1, duration, gas):
         return load_tissues(tissues, p0, p1, duration, gas['fractions'])
 
-    def can_ascend(self, target, gas):
+    def can_ascend(self, target, gas, rate=None):
         # Require the next stop to be permitted by the departure tissues too;
         # this matches the published DecoTengu stop-release convention.
         if (self.anchor is not None or self.gf_mode=='low') and self.pressure(target)+1e-8 < ceiling(self.tissues,self.gf(target)):
             return False
         if self.settings.get('ascentMode') == 'instant':
             return self.pressure(target)+1e-8 >= ceiling(self.tissues,self.gf(target))
-        duration = (self.depth-target)/ascent_rate(self.settings, gas['o2'])
+        duration = (self.depth-target)/(rate if rate is not None else ascent_rate(self.settings, gas['o2']))
         steps = max(1,math.ceil(duration*60))
         tissues = self.tissues
         depth = self.depth
@@ -561,42 +561,68 @@ class Simulation:
                 if complete_minutes > stop_credit:
                     self.advance(self.depth, complete_minutes-stop_credit, gas, 'deco')
 
-            travel = sum(duration for _, duration, _, phase in path if phase == 'gf_ascent')
             factor = 1.
             if instant:
                 while not self.station_path_clear(path, 1):
                     self.advance(self.depth, 1, gas, 'deco')
-            elif not self.station_path_clear(path, factor):
-                # Allocate whole minutes at the station. Adjust the travel time
-                # for the remaining fraction, so the GF peak occurs on arrival.
-                extra = 1.
-                while not self.station_path_clear(path, 1 + extra/travel):
-                    if station:
-                        self.advance(self.depth, 1, gas, 'deco')
-                    else:
-                        # A restarted projection may already be between stations.
-                        extra *= 2
-                        if self.time + travel + extra > 1080:
-                            raise ValueError('无法在当前 GF 上限内到达下一减压站。')
-                fast, slow = 1., 1 + extra/travel
-                while (slow-fast)*travel > 1e-6:
-                    mid = (fast+slow)/2
-                    if self.station_path_clear(path, mid):
-                        slow = mid
-                    else:
-                        fast = mid
-                factor = slow
-            for end, duration, gas, phase in path:
-                if phase == 'switch':
-                    self.advance(end, duration, gas, phase)
-                elif instant:
-                    self.advance(end, 0, gas, 'ascent')
-                else:
-                    start_time, start_depth = self.time, self.depth
-                    self.advance(end, duration*factor, gas, phase, log_leg=False)
-                    self.log_gf_leg(start_time, start_depth, gas)
+            else:
+                factor = self.variable_travel_factor(path, gas if station else None)
+            gas = self.travel_station_path(path, factor)
             stop_credit = 0.
         return gas
+
+    def variable_travel_factor(self, path, hold_gas=None):
+        if self.station_path_clear(path, 1):
+            return 1.
+        travel = sum(dt for _, dt, _, phase in path if phase=='gf_ascent')
+        extra = 1.
+        while not self.station_path_clear(path, 1 + extra/travel):
+            if hold_gas is not None:
+                self.advance(self.depth, 1, hold_gas, 'deco')
+            else:
+                # For a locked schedule or in-transit projection, adjust travel only.
+                extra *= 2
+                if self.time + travel + extra > 1080:
+                    raise ValueError('无法在当前 GF 上限内到达下一减压站。')
+        slow = 1 + extra/travel
+        fast = 1.
+        while (slow-fast)*travel > 1e-6:
+            mid = (fast+slow)/2
+            if self.station_path_clear(path, mid):
+                slow = mid
+            else:
+                fast = mid
+        return slow
+
+    def travel_station_path(self, path, factor):
+        for end, duration, gas, phase in path:
+            if phase == 'switch':
+                self.advance(end, duration, gas, phase)
+            elif self.settings['ascentMode']=='instant':
+                self.advance(end, 0, gas, 'ascent')
+            else:
+                start_time, start_depth = self.time, self.depth
+                self.advance(end, duration*factor, gas, phase, log_leg=False)
+                self.log_gf_leg(start_time, start_depth, gas)
+        return gas
+
+    def ascend_oc(self, gas, stop_credit=0):
+        """Design station depths and holds at the ordinary rate, and model actual travel."""
+        settings = self.settings
+        if (settings['ascentMode'] not in ('staged', 'variable')
+                or settings['decoAscentRate'] == settings['ascentRate']
+                or not any(g['enabled'] and g['o2'] >= 50 for g in self.gases.values())):
+            return self.ascend(gas, stop_credit)
+
+        design = StopDesign(self)
+        first_point = len(self.points)
+        final_gas = design.ascend(gas, stop_credit)
+        for warning in design.warnings:
+            if warning['code']=='switch':
+                self.warn('switch', warning['message'], warning['message'])
+        for point in self.points[first_point:]:
+            point['remainingPlanTTS'] = max(0., self.time - point['time'])
+        return final_gas
 
     def ascend(self, gas, stop_credit=0):
         if self.settings.get('ascentMode') in ('variable','instant'):
@@ -692,6 +718,37 @@ class ProjectionSimulation(Simulation):
         pass
 
 
+class StopDesign(ProjectionSimulation):
+    """Solve stops at the ordinary rate while executing them on a separate tissue state."""
+    def __init__(self, actual):
+        super().__init__(dict(actual.settings, decoAscentRate=actual.settings['ascentRate']),
+                         list(actual.gases.values()))
+        self.actual = actual
+        self.depth, self.time, self.tissues = actual.depth, actual.time, list(actual.tissues)
+        self.anchor, self.gf_mode = actual.anchor, actual.gf_mode
+        self.stop_elapsed = actual.stop_elapsed
+
+    def advance(self, depth, duration, gas, phase, **kwargs):
+        super().advance(depth, duration, gas, phase, **kwargs)
+        self.actual.anchor, self.actual.gf_mode = self.anchor, self.gf_mode
+        if phase == 'ascent':
+            duration = (self.actual.depth-depth)/ascent_rate(self.actual.settings, gas['o2'])
+        if not self.actual.station_path_clear([(depth, duration, gas, phase)], 1):
+            raise ValueError('按设定速度执行减压站计划时会越过 GF 上限。请调整速度或剖面。')
+        self.actual.advance(depth, duration, gas, phase)
+
+    def travel_station_path(self, path, factor):
+        # Advance the reference state on its own clock, without forwarding each
+        # individual leg to the actual profile a second time.
+        for end, duration, gas, phase in path:
+            super().advance(end, duration*factor if phase=='gf_ascent' else duration, gas, phase)
+        actual = self.actual
+        actual.anchor, actual.gf_mode = self.anchor, self.gf_mode
+        legs = actual.station_path(path[-1][0], path[0][2])
+        factor = actual.variable_travel_factor(legs)
+        return actual.travel_station_path(legs, factor)
+
+
 def point_metrics(payload):
     """NDL and independent current/+5 ascent projections from a tissue snapshot.
 
@@ -718,6 +775,9 @@ def point_metrics(payload):
     values=[]
     errors=[]
     for delay in (0,5):
+        if delay == 0 and point.get('remainingPlanTTS') is not None:
+            values.append(number(point['remainingPlanTTS'],'Remaining plan TTS',0,1080))
+            continue
         probe=ProjectionSimulation(settings,gases)
         probe.depth=depth
         probe.tissues=list(tissues) if delay==0 else load_tissues(tissues,ambient,ambient,delay,gas['fractions'])
@@ -726,7 +786,7 @@ def point_metrics(payload):
         try:
             # At the surface there is no remaining ascent, even if tissues are loaded.
             if depth>0:
-                probe.ascend(gas,stop_credit=stop_credit+delay if anchor is not None else 0)
+                probe.ascend_oc(gas,stop_credit=stop_credit+delay if anchor is not None else 0)
             values.append(probe.time)
         except ValueError as error:
             values.append(None)
@@ -828,11 +888,12 @@ def plan(payload, auto_ascent=True):
         simulation.advance(segment['depth'],segment['duration'],gas,'segment')
         current=gas
     ascent_start=simulation.time
-    if generated and simulation.can_ascend(0,current):
+    screening_rate = settings['ascentRate'] if settings['ascentMode'] in ('staged','variable') else None
+    if generated and simulation.can_ascend(0,current,screening_rate):
         for gas in gases:
             if gas['id'].startswith('auto-deco-'):
                 gas['enabled']=False
-    if auto_ascent: simulation.ascend(current)
+    if auto_ascent: simulation.ascend_oc(current)
     gas_results=[]
     for gas in gases:
         used=simulation.used[gas['id']]
@@ -1346,6 +1407,7 @@ EN_MESSAGES = {
 '没有能与底气交接的已启用旅行气，请检查气体和切换深度。':'No enabled travel mix overlaps the bottom mix at a valid switch depth. Check gas composition and switch depths.',
 '底部深度':'Bottom depth','底部停留时长':'Bottom hold duration',
 '无法在当前 GF 上限内到达下一减压站。':'The next station cannot be reached within the current GF limit.',
+'按设定速度执行减压站计划时会越过 GF 上限。请调整速度或剖面。':'The planned stops would cross the GF ceiling at the selected travel rate. Adjust the rate or profile.',
 '在当前气体和深度无法保持目标 GF。请检查分段和气体设置。':'The target GF cannot be maintained at this depth on this gas. Check the entered profile and gases.',
 '请设置 1–24 个潜水分段。':'Set 1–24 dive segments.',
 '默认速度模式请设置 1–12 个目标深度。':'Set 1–12 target depths in default speed mode.',

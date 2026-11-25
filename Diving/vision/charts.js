@@ -4,7 +4,7 @@ export const COLORS = ['#e58b25', '#c746c6', '#30a4ae', '#c66041', '#788d35', '#
 // Reserve a distinct color for every profile curve, including reference lines.
 // These fixed assignments keep colors stable as layers or gases are toggled.
 const PROFILE_COLORS = {
-  depth: '#168fca', gf99: '#855ad6',
+  depth: '#168fca', gf99: '#855ad6', tissueGF: '#b57632',
   ceilingHigh: '#d64d70', ceilingLow: '#a38a13', mValue: '#5364bb', targetGF: '#148775'
 };
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
@@ -30,6 +30,7 @@ export function timeAxisTicks(duration, width) {
 export function createCharts(profile, tissue, legend, onSelect) {
   const heliumPatternId=`tissue-he-hatch-${++tissuePatternSequence}`;
   let result = null, modes = ['depth'], cursor = 0, plot = null;
+  let updateProfileCursor = null;
   function pick(event) {
     if (!result || !plot) return;
     const box=profile.querySelector('svg').getBoundingClientRect();
@@ -43,7 +44,7 @@ export function createCharts(profile, tissue, legend, onSelect) {
   profile.addEventListener('pointermove', event => { if (event.buttons) pick(event); });
   function profileAxis(mode) {
     const points=result.points;
-    let minimum=0,maximum,series,unit,title,color,invert=false;
+    let minimum=0,maximum,series,unit,title,color,ticks,invert=false;
     if(mode==='depth'){
       maximum=Math.max(10,Math.ceil(result.summary.maxDepth/5)*5);invert=true;unit='m';title=t('深度','Depth');color=PROFILE_COLORS.depth;
       series=[{color,label:t('潜水深度','Depth'),values:points.map(p=>p.depth),fill:true}];
@@ -56,17 +57,42 @@ export function createCharts(profile, tissue, legend, onSelect) {
       }else series.push({color:PROFILE_COLORS.ceilingHigh,label:t('减压上限','Ceiling'),values:points.map(p=>p.ceiling),dash:true});
     }else if(mode==='gf99'){
       maximum=Math.max(100,Math.ceil(result.summary.maxGF99/20)*20);unit='%';title='GF99';color=PROFILE_COLORS.gf99;
-      series=[{color,label:'GF99',values:points.map(p=>p.gf99)},{color:PROFILE_COLORS.mValue,label:t('M 值','M-value'),values:points.map(()=>100),dash:true}];
-
-      if(result.settings.ascentMode==='constant'||result.settings.ascentMode==='variable'){
-        series.push({color:PROFILE_COLORS.targetGF,label:t('目标 GF','Target GF'),values:points.map(p=>p.gf),dash:true});
+      series=[];
+      if(modes.includes('tissueGF')){
+        title='GF';
+        if(!modes.includes('gf99'))color=PROFILE_COLORS.tissueGF;
+        for(let i=0;i<16;i++){
+          const values=points.map(point=>point.tissueGF[i]);
+          for(const value of values){
+            minimum=Math.min(minimum,value);
+            maximum=Math.max(maximum,value);
+          }
+          series.push({compartment:i+1,color:PROFILE_COLORS.tissueGF,label:t('腔隔','Compartment')+' '+(i+1),values});
+        }
+        // Keep zero on a labelled tick when some compartments are below ambient.
+        const roughStep=(maximum-minimum)/6,scale=10**Math.floor(Math.log10(roughStep));
+        const step=scale*[1,2,5,10].find(factor=>factor*scale>=roughStep);
+        minimum=Math.floor(minimum/step)*step;
+        maximum=Math.ceil(maximum/step)*step;
+        ticks=[];
+        for(let value=minimum;value<=maximum;value+=step)ticks.push(value);
+      }
+      if(modes.includes('gf99')){
+        series.push({color:PROFILE_COLORS.gf99,label:'GF99',values:points.map(p=>p.gf99)},{color:PROFILE_COLORS.mValue,label:t('M 值','M-value'),values:points.map(()=>100),dash:true});
+        if(result.settings.ascentMode==='constant'||result.settings.ascentMode==='variable'){
+          series.push({color:PROFILE_COLORS.targetGF,label:t('目标 GF','Target GF'),values:points.map(p=>p.gf),dash:true});
+        }
       }
     }
-    return {mode,minimum,maximum,series,unit,title,color,invert};
+    ticks??=Array.from({length:6},(_,i)=>minimum+(maximum-minimum)*i/5);
+    return {mode,minimum,maximum,series,unit,title,color,invert,ticks};
   }
   function drawProfile() {
     if(!result)return;
-    const axes=modes.map(profileAxis),left=44,axisGap=54,right=axes.length===1?16:axes.length*axisGap-14;
+    const axes=[];
+    if(modes.includes('depth'))axes.push(profileAxis('depth'));
+    if(modes.includes('gf99')||modes.includes('tissueGF'))axes.push(profileAxis('gf99'));
+    const left=44,axisGap=54,right=axes.length===1?16:axes.length*axisGap-14;
     const width=Math.max(left+right+230,profile.clientWidth),height=320,top=44,bottom=36;
     const innerWidth=width-left-right,innerHeight=height-top-bottom;
     plot={width,left,innerWidth};
@@ -74,16 +100,16 @@ export function createCharts(profile, tissue, legend, onSelect) {
     const points=result.points,x=time=>left+time/result.summary.runtime*innerWidth;
     for(const axis of axes)axis.y=value=>top+(axis.invert?(value-axis.minimum)/(axis.maximum-axis.minimum):1-(value-axis.minimum)/(axis.maximum-axis.minimum))*innerHeight;
     let body='';
-    for(let i=0;i<=5;i++){
-      const yy=top+innerHeight*i/5;
+    for(const value of axes[0].ticks){
+      const yy=axes[0].y(value);
       body+=`<line x1="${left}" y1="${yy}" x2="${width-right}" y2="${yy}" stroke="${line}" stroke-dasharray="3 4"/>`;
     }
     axes.forEach((axis,index)=>{
       const axisX=index===0?left:width-right+(index-1)*axisGap,anchor=index===0?'end':'start',labelX=axisX+(index===0?-7:7);
       body+=`<g class="profile-axis" data-axis="${axis.mode}"><line x1="${axisX}" x2="${axisX}" y1="${top}" y2="${height-bottom}" stroke="${axis.color}" opacity=".65"/>`;
       body+=svgText(axisX,13,axis.title,'middle',axis.color)+svgText(axisX,28,axis.unit,'middle',axis.color);
-      for(let i=0;i<=5;i++){
-        const value=axis.minimum+(axis.maximum-axis.minimum)*i/5,yy=axis.y(value);
+      for(const value of axis.ticks){
+        const yy=axis.y(value);
         body+=`<line x1="${axisX}" x2="${axisX+(index===0?-4:4)}" y1="${yy}" y2="${yy}" stroke="${axis.color}"/>`+svgText(labelX,yy+3,format(value,2),anchor,axis.color);
       }
       body+='</g>';
@@ -97,7 +123,11 @@ export function createCharts(profile, tissue, legend, onSelect) {
       for(const item of axis.series){
         const coordinates=points.map((point,index)=>`${x(point.time).toFixed(2)},${axis.y(item.values[index]).toFixed(2)}`).join(' ');
         if(item.fill)body+=`<polygon points="${left},${axis.y(0)} ${coordinates} ${x(result.summary.runtime)},${axis.y(0)}" fill="${theme.getPropertyValue('--chart-fill').trim()}" opacity="${axes.length>1?.2:.65}"/>`;
-        body+=`<polyline points="${coordinates}" fill="none" stroke="${item.color}" stroke-width="${item.dash?1.4:2.3}" ${item.dash?'stroke-dasharray="5 4"':''} stroke-linejoin="round"/>`;
+        if(item.compartment){
+          body+=`<polyline data-compartment="${item.compartment}" points="${coordinates}" fill="none" stroke="${item.color}" stroke-width="1.2" stroke-linejoin="round"><title>${escapeHTML(item.label)}</title></polyline>`;
+        }else{
+          body+=`<polyline points="${coordinates}" fill="none" stroke="${item.color}" stroke-width="${item.dash?1.4:2.3}" ${item.dash?'stroke-dasharray="5 4"':''} stroke-linejoin="round"/>`;
+        }
       }
       body+='</g>';
     }
@@ -108,12 +138,30 @@ export function createCharts(profile, tissue, legend, onSelect) {
       const coords = compare.points.map(p=>x(p.time).toFixed(2)+','+depthAxis.y(p.depth).toFixed(2)).join(' ');
       body+=`<defs><clipPath id="profile-plot-clip"><rect x="${left}" y="${top-1}" width="${innerWidth}" height="${innerHeight+2}"/></clipPath></defs><polyline class="profile-comparison" points="${coords}" clip-path="url(#profile-plot-clip)" fill="none" stroke="${compareColor}" stroke-width="2" stroke-dasharray="6 4"/>`;
     }
-    const xx=x(points[cursor].time);
-    body+=`<line class="profile-cursor" x1="${xx}" x2="${xx}" y1="${top}" y2="${height-bottom}" stroke="${theme.getPropertyValue('--chart-label').trim()}" stroke-width="1" stroke-dasharray="3 3"/>`;
-    for(const axis of axes)for(const item of axis.series.filter(item=>!item.dash))body+=`<circle cx="${xx}" cy="${axis.y(item.values[cursor])}" r="4" fill="${paper}" stroke="${item.color}" stroke-width="2"/>`;
+    body+=`<line class="profile-cursor" y1="${top}" y2="${height-bottom}" stroke="${theme.getPropertyValue('--chart-label').trim()}" stroke-width="1" stroke-dasharray="3 3"/>`;
+    const markers=[];
+    for(const axis of axes)for(const item of axis.series){
+      if(item.dash||item.compartment)continue;
+      markers.push({axis,item});
+      body+=`<circle class="profile-marker" r="4" fill="${paper}" stroke="${item.color}" stroke-width="2"/>`;
+    }
     const description=axes.map(axis=>`${axis.title} (${axis.unit})`).join(' · ');
     profile.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHTML(description)} ${t('随时间变化','over time')}" style="min-width:${width}px" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${paper}"/>${body}</svg>`;
-    legend.innerHTML=axes.flatMap(axis=>axis.series.map(item=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash))).join('')+(compare?legendItem(compareColor,compare.label,true):'');
+    const cursorLine=profile.querySelector('.profile-cursor');
+    const circles=profile.querySelectorAll('.profile-marker');
+    const legendSeries=axes.flatMap(axis=>axis.series.filter(item=>!item.compartment).map(item=>({axis,item})));
+    const tissueKey=modes.includes('tissueGF')?legendItem(PROFILE_COLORS.tissueGF,t('16 个腔隔 GF','16 compartment GFs')):'';
+    updateProfileCursor=()=>{
+      const xx=x(points[cursor].time);
+      cursorLine.setAttribute('x1',xx);
+      cursorLine.setAttribute('x2',xx);
+      markers.forEach(({axis,item},i)=>{
+        circles[i].setAttribute('cx',xx);
+        circles[i].setAttribute('cy',axis.y(item.values[cursor]));
+      });
+      legend.innerHTML=legendSeries.map(({axis,item})=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash)).join('')+tissueKey+(compare?legendItem(compareColor,compare.label,true):'');
+    };
+    updateProfileCursor();
   }
   function drawTissues() {
     if (!result || !tissue) return;
@@ -159,10 +207,10 @@ export function createCharts(profile, tissue, legend, onSelect) {
   }
   return {
     setData(data) {result=data;cursor=0;drawProfile();drawTissues();},
-    select(index) {cursor=index;drawProfile();drawTissues();},
-    setModes(values) {const selected=['depth','gf99'].filter(mode=>values.includes(mode));modes=selected.length?selected:['depth'];drawProfile();},
+    select(index) {cursor=index;updateProfileCursor?.();drawTissues();},
+    setModes(values) {const selected=['depth','gf99','tissueGF'].filter(mode=>values.includes(mode));modes=selected.length?selected:['depth'];drawProfile();},
     redraw() {drawProfile();drawTissues();},
-    clear() {result=null;legend.innerHTML='';profile.innerHTML=`<div class="empty-state"><div class="empty-waves" aria-hidden="true">≈</div><strong>${t('等待新的计算','Ready to explore')}</strong><p>${t('设置参数后点击计算。','Set your parameters and calculate.')}</p></div>`;if(tissue)tissue.innerHTML=`<p class="chart-placeholder">${t('完成计算后显示组织压力。','Calculate to view tissue pressures.')}</p>`;}
+    clear() {result=null;updateProfileCursor=null;legend.innerHTML='';profile.innerHTML=`<div class="empty-state"><div class="empty-waves" aria-hidden="true">≈</div><strong>${t('等待新的计算','Ready to explore')}</strong><p>${t('设置参数后点击计算。','Set your parameters and calculate.')}</p></div>`;if(tissue)tissue.innerHTML=`<p class="chart-placeholder">${t('完成计算后显示组织压力。','Calculate to view tissue pressures.')}</p>`;}
   };
 }
 

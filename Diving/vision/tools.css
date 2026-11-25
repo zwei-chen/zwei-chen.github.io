@@ -83,3 +83,7 @@
 @media(min-width:521px) and (max-width:900px){.tool-nav{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .cc-metrics{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted)}
 .cc-metrics strong{display:block;color:var(--ink)}
+
+.compartment-key{display:flex;align-items:center;flex-wrap:wrap;gap:5px 12px;flex-basis:100%;font-variant-numeric:tabular-nums}
+.compartment-key>span{display:inline-flex;align-items:center;gap:4px}
+.compartment>span::before{content:"";display:inline-block;width:7px;height:7px;margin-right:4px;border-radius:50%;background:var(--compartment-color);vertical-align:middle}

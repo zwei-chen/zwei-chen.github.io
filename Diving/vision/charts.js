@@ -1,10 +1,15 @@
 import {t,lang} from './language.js';
 // Cylinder colors are shared by the input cards, pressure curves and gas summary.
 export const COLORS = ['#e58b25', '#c746c6', '#30a4ae', '#c66041', '#788d35', '#bd7495', '#427ab5', '#967552'];
+// The index is the ZHL-16C compartment number minus one, from fast to slow.
+export const COMPARTMENT_COLORS = [
+  '#cb550e', '#397bce', '#298b45', '#ca479c', '#079684', '#9657c4', '#a68919', '#db4951',
+  '#289bb7', '#8c6e48', '#6b9128', '#b9678d', '#626bc3', '#ad6255', '#6f91ab', '#a773ce'
+];
 // Reserve a distinct color for every profile curve, including reference lines.
 // These fixed assignments keep colors stable as layers or gases are toggled.
 const PROFILE_COLORS = {
-  depth: '#168fca', gf99: '#855ad6', tissueGF: '#b57632',
+  depth: '#168fca', gf99: '#855ad6',
   ceilingHigh: '#d64d70', ceilingLow: '#a38a13', mValue: '#5364bb', targetGF: '#148775'
 };
 export const compartmentGF99 = gradient => Math.max(0, gradient);
@@ -61,11 +66,12 @@ export function createCharts(profile, tissue, legend, onSelect) {
       maximum=Math.max(100,Math.ceil(result.summary.maxGF99/20)*20);unit='%';title='GF99';color=PROFILE_COLORS.gf99;
       series=[];
       if(modes.includes('tissueGF')){
-        if(!modes.includes('gf99'))color=PROFILE_COLORS.tissueGF;
-        for(let i=0;i<16;i++){
+        if(!modes.includes('gf99'))color=getComputedStyle(document.documentElement).getPropertyValue('--chart-label').trim();
+        COMPARTMENT_COLORS.forEach((stroke,i)=>{
           const values=points.map(point=>compartmentGF99(point.tissueGF[i]));
-          series.push({compartment:i+1,color:PROFILE_COLORS.tissueGF,label:t('腔隔','Compartment')+' '+(i+1),values});
-        }
+          const number=String(i+1).padStart(2,'0');
+          series.push({compartment:i+1,color:stroke,label:t('腔隔','Compartment')+' '+number,values});
+        });
       }
       if(modes.includes('gf99')){
         series.push({color:PROFILE_COLORS.gf99,label:'GF99',values:points.map(p=>p.gf99)},{color:PROFILE_COLORS.mValue,label:t('M 值','M-value'),values:points.map(()=>100),dash:true});
@@ -140,7 +146,10 @@ export function createCharts(profile, tissue, legend, onSelect) {
     const cursorLine=profile.querySelector('.profile-cursor');
     const circles=profile.querySelectorAll('.profile-marker');
     const legendSeries=axes.flatMap(axis=>axis.series.filter(item=>!item.compartment).map(item=>({axis,item})));
-    const tissueKey=modes.includes('tissueGF')?legendItem(PROFILE_COLORS.tissueGF,t('16 个腔隔 GF99','GF99 by compartment (16)')):'';
+    const compartmentLabel=t('腔隔 GF99','Compartment GF99');
+    const tissueKey=modes.includes('tissueGF')
+      ? `<div class="compartment-key" role="group" aria-label="${compartmentLabel}"><b>${compartmentLabel}</b>${COMPARTMENT_COLORS.map((color,i)=>legendItem(color,String(i+1).padStart(2,'0'))).join('')}</div>`
+      : '';
     updateProfileCursor=()=>{
       const xx=x(points[cursor].time);
       cursorLine.setAttribute('x1',xx);
@@ -149,7 +158,7 @@ export function createCharts(profile, tissue, legend, onSelect) {
         circles[i].setAttribute('cx',xx);
         circles[i].setAttribute('cy',axis.y(item.values[cursor]));
       });
-      legend.innerHTML=legendSeries.map(({axis,item})=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash)).join('')+tissueKey+(compare?legendItem(compareColor,compare.label,true):'');
+      legend.innerHTML=legendSeries.map(({axis,item})=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash)).join('')+(compare?legendItem(compareColor,compare.label,true):'')+tissueKey;
     };
     updateProfileCursor();
   }

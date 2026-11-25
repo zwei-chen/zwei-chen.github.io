@@ -1,5 +1,5 @@
-import {COLORS,escapeHTML as esc,format as f} from './charts.js?v=4';
-import {createProfileView,download} from './profile-view.js?v=4';
+import {COLORS,escapeHTML as esc,format as f} from './charts.js?v=5';
+import {createProfileView,download} from './profile-view.js?v=5';
 import {t} from './language.js';
 import {PythonEngine} from './engine.js';
 const $=s=>document.querySelector(s), visual=document.documentElement.dataset.tool==='vision';

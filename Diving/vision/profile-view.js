@@ -1,4 +1,4 @@
-import {format as f, createCharts, createGFPressureChart,timeAxisTicks,compartmentGF99} from './charts.js?v=4';
+import {format as f, createCharts, createGFPressureChart,timeAxisTicks,compartmentGF99,COMPARTMENT_COLORS} from './charts.js?v=5';
 import {t} from './language.js';
 const $=selector=>document.querySelector(selector);
 export function createProfileView(engine){
@@ -82,7 +82,7 @@ export function createProfileView(engine){
   function selectPoint(index){if(!result)return;const p=result.points[index],gas=result.gases.find(g=>g.id===p.gas);$('#time-cursor').value=String(p.time);$('#time-cursor').dataset.position=String(result.minuteIndices.indexOf(index));$('#time-cursor').setAttribute('aria-valuetext',`${f(p.time,2)} ${t('分钟','minutes')}`);$('#cursor-time').textContent=`${f(p.time,2)} / ${f(result.summary.runtime,2)} min`;
     selectedPoint=index;renderPointInfo(p,gas);requestPointMetrics(index);
     const leading=p.gf99>0?p.tissueGF.indexOf(Math.max(...p.tissueGF)):-1;
-    $('#compartment-grid').innerHTML=p.tissueGF.map((value,i)=>`<div class="compartment ${i===leading?'leading':''} ${value>100?'over':''}"><span>${String(i+1).padStart(2,'0')}${i===leading?' ●':''}</span><strong>${f(compartmentGF99(value))}<small>%</small></strong></div>`).join('');charts.select(index);
+    $('#compartment-grid').innerHTML=p.tissueGF.map((value,i)=>`<div class="compartment ${i===leading?'leading':''} ${value>100?'over':''}" style="--compartment-color:${COMPARTMENT_COLORS[i]}"><span>${String(i+1).padStart(2,'0')}${i===leading?' ●':''}</span><strong>${f(compartmentGF99(value))}<small>%</small></strong></div>`).join('');charts.select(index);
   }
   function renderTimeline(){
     if(!result)return;

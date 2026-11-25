@@ -1,7 +1,7 @@
 import {PythonEngine} from './engine.js';
-import {createProfileView} from './profile-view.js';
+import {createProfileView} from './profile-view.js?v=4';
 import {t} from './language.js';
-import {escapeHTML as esc, format as f} from './charts.js';
+import {escapeHTML as esc, format as f} from './charts.js?v=4';
 
 const $ = selector => document.querySelector(selector);
 const form = $('#cc-form');

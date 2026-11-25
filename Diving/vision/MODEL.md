@@ -100,7 +100,7 @@ GF High 和 GF Low 分别绘出固定 GF 对应的参考上限，不覆盖任何
 
 `GFi = 100 × (PN2i + PHei − Pamb) / (ai + Pamb / bi − Pamb)`
 
-`GF99 = max(0, max_i(GFi))`。不截断超过 100% 的数值。逐腔隔表保留负值，主导正梯度腔隔以圆点突出。
+`GF99 = max(0, max_i(GFi))`。每条腔隔曲线与对应的游标读数都显示 `max(0, GFi)`，超过 100% 的值照实显示。主导正梯度腔隔以圆点突出。
 `SurfGF` 使用水面绝对压力替代 Pamb。它与当前深度 GF99 不同。
 时间播放和游标展示的是已由 Python 计算出的快照；可视化中 GF High 和 GF Low 不改变用户输入的剖面或 GF99；二者用于分别计算参考上限。
 定义参考 [Shearwater GF99 FAQ](https://shearwater.com/pages/petrel-2-support)。

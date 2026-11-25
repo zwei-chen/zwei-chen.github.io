@@ -7,6 +7,7 @@ const PROFILE_COLORS = {
   depth: '#168fca', gf99: '#855ad6', tissueGF: '#b57632',
   ceilingHigh: '#d64d70', ceilingLow: '#a38a13', mValue: '#5364bb', targetGF: '#148775'
 };
+export const compartmentGF99 = gradient => Math.max(0, gradient);
 export const escapeHTML = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 export const format = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toLocaleString(lang==='en'?'en-US':'zh-CN', {maximumFractionDigits:digits}) : '—';
 const svgText = (x,y,text,anchor='middle',fill=getComputedStyle(document.documentElement).getPropertyValue('--chart-label').trim()) => `<text x="${x}" y="${y}" text-anchor="${anchor}" fill="${fill}" font-size="10" font-family="sans-serif">${escapeHTML(text)}</text>`;
@@ -44,7 +45,8 @@ export function createCharts(profile, tissue, legend, onSelect) {
   profile.addEventListener('pointermove', event => { if (event.buttons) pick(event); });
   function profileAxis(mode) {
     const points=result.points;
-    let minimum=0,maximum,series,unit,title,color,ticks,invert=false;
+    const minimum=0;
+    let maximum,series,unit,title,color,invert=false;
     if(mode==='depth'){
       maximum=Math.max(10,Math.ceil(result.summary.maxDepth/5)*5);invert=true;unit='m';title=t('深度','Depth');color=PROFILE_COLORS.depth;
       series=[{color,label:t('潜水深度','Depth'),values:points.map(p=>p.depth),fill:true}];
@@ -59,23 +61,11 @@ export function createCharts(profile, tissue, legend, onSelect) {
       maximum=Math.max(100,Math.ceil(result.summary.maxGF99/20)*20);unit='%';title='GF99';color=PROFILE_COLORS.gf99;
       series=[];
       if(modes.includes('tissueGF')){
-        title='GF';
         if(!modes.includes('gf99'))color=PROFILE_COLORS.tissueGF;
         for(let i=0;i<16;i++){
-          const values=points.map(point=>point.tissueGF[i]);
-          for(const value of values){
-            minimum=Math.min(minimum,value);
-            maximum=Math.max(maximum,value);
-          }
+          const values=points.map(point=>compartmentGF99(point.tissueGF[i]));
           series.push({compartment:i+1,color:PROFILE_COLORS.tissueGF,label:t('腔隔','Compartment')+' '+(i+1),values});
         }
-        // Keep zero on a labelled tick when some compartments are below ambient.
-        const roughStep=(maximum-minimum)/6,scale=10**Math.floor(Math.log10(roughStep));
-        const step=scale*[1,2,5,10].find(factor=>factor*scale>=roughStep);
-        minimum=Math.floor(minimum/step)*step;
-        maximum=Math.ceil(maximum/step)*step;
-        ticks=[];
-        for(let value=minimum;value<=maximum;value+=step)ticks.push(value);
       }
       if(modes.includes('gf99')){
         series.push({color:PROFILE_COLORS.gf99,label:'GF99',values:points.map(p=>p.gf99)},{color:PROFILE_COLORS.mValue,label:t('M 值','M-value'),values:points.map(()=>100),dash:true});
@@ -84,7 +74,7 @@ export function createCharts(profile, tissue, legend, onSelect) {
         }
       }
     }
-    ticks??=Array.from({length:6},(_,i)=>minimum+(maximum-minimum)*i/5);
+    const ticks=Array.from({length:6},(_,i)=>minimum+(maximum-minimum)*i/5);
     return {mode,minimum,maximum,series,unit,title,color,invert,ticks};
   }
   function drawProfile() {
@@ -150,7 +140,7 @@ export function createCharts(profile, tissue, legend, onSelect) {
     const cursorLine=profile.querySelector('.profile-cursor');
     const circles=profile.querySelectorAll('.profile-marker');
     const legendSeries=axes.flatMap(axis=>axis.series.filter(item=>!item.compartment).map(item=>({axis,item})));
-    const tissueKey=modes.includes('tissueGF')?legendItem(PROFILE_COLORS.tissueGF,t('16 个腔隔 GF','16 compartment GFs')):'';
+    const tissueKey=modes.includes('tissueGF')?legendItem(PROFILE_COLORS.tissueGF,t('16 个腔隔 GF99','GF99 by compartment (16)')):'';
     updateProfileCursor=()=>{
       const xx=x(points[cursor].time);
       cursorLine.setAttribute('x1',xx);

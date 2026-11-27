@@ -1,4 +1,4 @@
-import {format as f, createCharts, createGFPressureChart,timeAxisTicks,compartmentGF99,COMPARTMENT_COLORS} from './charts.js?v=5';
+import {format as f, createCharts, createGFPressureChart,timeAxisTicks,compartmentGF99,COMPARTMENT_COLORS} from './charts.js?v=6';
 import {t} from './language.js';
 const $=selector=>document.querySelector(selector);
 export function createProfileView(engine){
@@ -7,7 +7,8 @@ export function createProfileView(engine){
   const pointMetricsCache=new Map();
   let pressureView=false;
   const gfChart=$('#gf-pressure-chart') && createGFPressureChart($('#gf-pressure-chart'),$('#gf-pressure-legend'),$('#gf-pressure-anchor'));
-  const charts=createCharts($('#profile-chart'),$('#tissue-chart'),$('#chart-legend'),selectPoint);
+  const charts=createCharts($('#profile-chart'), $('#tissue-chart'), $('#chart-legend'), selectPoint,
+    $('#tissue-pressure-chart'), $('#tissue-pressure-legend'));
   function stopPlay(){clearInterval(playTimer);playTimer=null;$('#play-profile').textContent=t('▶ 播放','▶ Play');}
   function clearPointInfo(){
     selectedPoint=-1;clearTimeout(pointMetricsTimer);pointMetricsPending=null;pointMetricsCache.clear();
@@ -124,7 +125,7 @@ export function createProfileView(engine){
     showChartView();
   });
   $('#open-gf-window')?.addEventListener('click',()=>{pressureView=!pressureView;showChartView();});
-  const chartResize=new ResizeObserver(()=>{charts.redraw();gfChart?.redraw();renderTimeline();});chartResize.observe($('#profile-chart'));if(gfChart)chartResize.observe($('#gf-pressure-chart'));chartResize.observe($('#timeline-scroll'));addEventListener('themechange',()=>{charts.redraw();gfChart?.redraw();});
+  const chartResize=new ResizeObserver(()=>{charts.redraw();gfChart?.redraw();renderTimeline();});chartResize.observe($('#profile-chart'));chartResize.observe($('#tissue-pressure-chart'));if(gfChart)chartResize.observe($('#gf-pressure-chart'));chartResize.observe($('#timeline-scroll'));addEventListener('themechange',()=>{charts.redraw();gfChart?.redraw();});
   $('#export-chart').addEventListener('click',()=>{const svg=$(pressureView?'#gf-pressure-chart svg':'#profile-chart svg');if(svg)download(svg.outerHTML,pressureView?'Dive-Vision-GF-pressure.svg':'Dive-Vision-profile.svg','image/svg+xml');});
   showChartView();
   addEventListener('pagehide',stopPlay);

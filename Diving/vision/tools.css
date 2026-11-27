@@ -87,3 +87,5 @@
 .compartment-key{display:flex;align-items:center;flex-wrap:wrap;gap:5px 12px;flex-basis:100%;font-variant-numeric:tabular-nums}
 .compartment-key>span{display:inline-flex;align-items:center;gap:4px}
 .compartment>span::before{content:"";display:inline-block;width:7px;height:7px;margin-right:4px;border-radius:50%;background:var(--compartment-color);vertical-align:middle}
+.pressure-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:6px 12px;font-variant-numeric:tabular-nums}
+.pressure-legend>span{white-space:nowrap}

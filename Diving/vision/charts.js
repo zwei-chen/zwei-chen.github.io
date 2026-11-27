@@ -33,21 +33,32 @@ export function timeAxisTicks(duration, width) {
   return ticks;
 }
 
-export function createCharts(profile, tissue, legend, onSelect) {
+export function createCharts(profile, tissue, legend, onSelect, pressureChart, pressureLegend) {
+  const pressurePlaceholder=pressureChart.innerHTML;
   const heliumPatternId=`tissue-he-hatch-${++tissuePatternSequence}`;
-  let result = null, modes = ['depth'], cursor = 0, plot = null;
-  let updateProfileCursor = null;
+  let result = null, modes = ['depth'], cursor = 0;
+  let profilePlot = null, pressurePlot = null;
   function pick(event) {
-    if (!result || !plot) return;
-    const box=profile.querySelector('svg').getBoundingClientRect();
-    const x=(event.clientX-box.left)*plot.width/box.width;
-    const time=Math.max(0,Math.min(1,(x-plot.left)/plot.innerWidth))*result.summary.runtime;
-    let best=result.minuteIndices[0];
-    for(const index of result.minuteIndices)if(Math.abs(result.points[index].time-time)<Math.abs(result.points[best].time-time))best=index;
+    const container = event.currentTarget;
+    const plot = container === profile ? profilePlot : pressurePlot;
+    if (!plot) return;
+    const box = container.querySelector('svg').getBoundingClientRect();
+    const x = (event.clientX - box.left) * plot.width / box.width;
+    const time = Math.max(0, Math.min(1, (x - plot.left) / plot.innerWidth)) * result.summary.runtime;
+    let best = result.minuteIndices[0];
+    for (const index of result.minuteIndices) {
+      if (Math.abs(result.points[index].time - time) < Math.abs(result.points[best].time - time)) best = index;
+    }
     onSelect(best);
   }
-  profile.addEventListener('pointerdown', event => { if (!result) return; profile.setPointerCapture(event.pointerId); pick(event); });
-  profile.addEventListener('pointermove', event => { if (event.buttons) pick(event); });
+  for (const container of [profile, pressureChart]) {
+    container.addEventListener('pointerdown', event => {
+      if (!result) return;
+      container.setPointerCapture(event.pointerId);
+      pick(event);
+    });
+    container.addEventListener('pointermove', event => { if (event.buttons) pick(event); });
+  }
   function profileAxis(mode) {
     const points=result.points;
     const minimum=0;
@@ -79,6 +90,20 @@ export function createCharts(profile, tissue, legend, onSelect) {
           series.push({color:PROFILE_COLORS.targetGF,label:t('目标 GF','Target GF'),values:points.map(p=>p.gf),dash:true});
         }
       }
+    }else if(mode==='tissuePressure'){
+      unit='bar';title=t('组织压力','Tissue pressure');
+      color=getComputedStyle(document.documentElement).getPropertyValue('--chart-label').trim();
+      let peak=0;
+      series=COMPARTMENT_COLORS.map((stroke,i)=>{
+        const values=points.map(point=>{
+          const [nitrogen,helium]=point.tissues[i];
+          const pressure=nitrogen+helium;
+          peak=Math.max(peak,pressure);
+          return pressure;
+        });
+        return {compartment:i+1,color:stroke,label:t('腔隔','Compartment')+' '+String(i+1).padStart(2,'0'),values};
+      });
+      maximum=Math.max(1,Math.ceil(peak));
     }
     const ticks=Array.from({length:6},(_,i)=>minimum+(maximum-minimum)*i/5);
     return {mode,minimum,maximum,series,unit,title,color,invert,ticks};
@@ -88,12 +113,17 @@ export function createCharts(profile, tissue, legend, onSelect) {
     const axes=[];
     if(modes.includes('depth'))axes.push(profileAxis('depth'));
     if(modes.includes('gf99')||modes.includes('tissueGF'))axes.push(profileAxis('gf99'));
+    profilePlot=drawTimeChart(profile,legend,axes);
+  }
+  function drawPressureHistory() {
+    if(result)pressurePlot=drawTimeChart(pressureChart,pressureLegend,[profileAxis('tissuePressure')]);
+  }
+  function drawTimeChart(container, chartLegend, axes) {
     const left=44,axisGap=54,right=axes.length===1?16:axes.length*axisGap-14;
-    const width=Math.max(left+right+230,profile.clientWidth),height=320,top=44,bottom=36;
+    const width=Math.max(left+right+230,container.clientWidth),height=320,top=44,bottom=36;
     const innerWidth=width-left-right,innerHeight=height-top-bottom;
-    plot={width,left,innerWidth};
     const theme=getComputedStyle(document.documentElement),paper=theme.getPropertyValue('--paper').trim(),line=theme.getPropertyValue('--line').trim();
-    const points=result.points,x=time=>left+time/result.summary.runtime*innerWidth;
+    const points=result.points,x=time=>left+(result.summary.runtime>0?time/result.summary.runtime:0)*innerWidth;
     for(const axis of axes)axis.y=value=>top+(axis.invert?(value-axis.minimum)/(axis.maximum-axis.minimum):1-(value-axis.minimum)/(axis.maximum-axis.minimum))*innerHeight;
     let body='';
     for(const value of axes[0].ticks){
@@ -142,15 +172,22 @@ export function createCharts(profile, tissue, legend, onSelect) {
       body+=`<circle class="profile-marker" r="4" fill="${paper}" stroke="${item.color}" stroke-width="2"/>`;
     }
     const description=axes.map(axis=>`${axis.title} (${axis.unit})`).join(' · ');
-    profile.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHTML(description)} ${t('随时间变化','over time')}" style="min-width:${width}px" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${paper}"/>${body}</svg>`;
-    const cursorLine=profile.querySelector('.profile-cursor');
-    const circles=profile.querySelectorAll('.profile-marker');
+    container.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escapeHTML(description)} ${t('随时间变化','over time')}" style="min-width:${width}px" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${paper}"/>${body}</svg>`;
+    const cursorLine=container.querySelector('.profile-cursor');
+    const circles=container.querySelectorAll('.profile-marker');
     const legendSeries=axes.flatMap(axis=>axis.series.filter(item=>!item.compartment).map(item=>({axis,item})));
     const compartmentLabel=t('腔隔 GF99','Compartment GF99');
-    const tissueKey=modes.includes('tissueGF')
+    const pressureAxis=axes.find(axis=>axis.mode==='tissuePressure');
+    const tissueKey=!pressureAxis && modes.includes('tissueGF')
       ? `<div class="compartment-key" role="group" aria-label="${compartmentLabel}"><b>${compartmentLabel}</b>${COMPARTMENT_COLORS.map((color,i)=>legendItem(color,String(i+1).padStart(2,'0'))).join('')}</div>`
       : '';
-    updateProfileCursor=()=>{
+    if(pressureAxis){
+      chartLegend.innerHTML=pressureAxis.series.map(item=>
+        `<span title="${escapeHTML(item.label)}"><i style="--swatch:${item.color}"></i>${String(item.compartment).padStart(2,'0')} · <output></output></span>`
+      ).join('');
+    }
+    const readings=chartLegend.querySelectorAll('output');
+    function updateCursor(){
       const xx=x(points[cursor].time);
       cursorLine.setAttribute('x1',xx);
       cursorLine.setAttribute('x2',xx);
@@ -158,9 +195,14 @@ export function createCharts(profile, tissue, legend, onSelect) {
         circles[i].setAttribute('cx',xx);
         circles[i].setAttribute('cy',axis.y(item.values[cursor]));
       });
-      legend.innerHTML=legendSeries.map(({axis,item})=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash)).join('')+(compare?legendItem(compareColor,compare.label,true):'')+tissueKey;
-    };
-    updateProfileCursor();
+      if(pressureAxis){
+        readings.forEach((output,i)=>{output.textContent=format(pressureAxis.series[i].values[cursor],2)+' bar';});
+        return;
+      }
+      chartLegend.innerHTML=legendSeries.map(({axis,item})=>legendItem(item.color,`${item.label} · ${format(item.values[cursor],2)} ${axis.unit}`,item.dash)).join('')+(compare?legendItem(compareColor,compare.label,true):'')+tissueKey;
+    }
+    updateCursor();
+    return {width,left,innerWidth,updateCursor};
   }
   function drawTissues() {
     if (!result || !tissue) return;
@@ -205,11 +247,11 @@ export function createCharts(profile, tissue, legend, onSelect) {
     tissue.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${t('十六组组织归一化负荷，实色为氮气、条纹为氦气，时间','Sixteen normalized tissue loadings: solid nitrogen, hatched helium, at')} ${format(point.time,2)} min" viewBox="0 0 ${width} ${height}">${body}</svg>`;
   }
   return {
-    setData(data) {result=data;cursor=0;drawProfile();drawTissues();},
-    select(index) {cursor=index;updateProfileCursor?.();drawTissues();},
+    setData(data) {result=data;cursor=0;drawProfile();drawTissues();drawPressureHistory();},
+    select(index) {cursor=index;profilePlot?.updateCursor();pressurePlot?.updateCursor();drawTissues();},
     setModes(values) {const selected=['depth','gf99','tissueGF'].filter(mode=>values.includes(mode));modes=selected.length?selected:['depth'];drawProfile();},
-    redraw() {drawProfile();drawTissues();},
-    clear() {result=null;updateProfileCursor=null;legend.innerHTML='';profile.innerHTML=`<div class="empty-state"><div class="empty-waves" aria-hidden="true">≈</div><strong>${t('等待新的计算','Ready to explore')}</strong><p>${t('设置参数后点击计算。','Set your parameters and calculate.')}</p></div>`;if(tissue)tissue.innerHTML=`<p class="chart-placeholder">${t('完成计算后显示组织压力。','Calculate to view tissue pressures.')}</p>`;}
+    redraw() {drawProfile();drawTissues();drawPressureHistory();},
+    clear() {result=null;profilePlot=null;pressurePlot=null;pressureChart.innerHTML=pressurePlaceholder;pressureLegend.replaceChildren();legend.innerHTML='';profile.innerHTML=`<div class="empty-state"><div class="empty-waves" aria-hidden="true">≈</div><strong>${t('等待新的计算','Ready to explore')}</strong><p>${t('设置参数后点击计算。','Set your parameters and calculate.')}</p></div>`;if(tissue)tissue.innerHTML=`<p class="chart-placeholder">${t('完成计算后显示组织压力。','Calculate to view tissue pressures.')}</p>`;}
   };
 }
 

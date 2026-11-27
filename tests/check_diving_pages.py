@@ -50,6 +50,8 @@ for language,prefix in [('zh',''),('en','en/')]:
             assert page.primary==expected,(path,page.primary)
             assert set(page.advanced)=={'density','surfacePressure','altitude','ppo2Work','reserve','sacDeco','ppo2Deco'} | ({'lastStop'} if tool!='constant-gf' else set()) | ({'ascentMode'} if tool=='plan' else set()),(path,page.advanced)
             assert not {'switchTime','safetyStop'} & set(page.names),path
+        if tool in ('vision','plan','cc-plan','constant-gf'):
+            assert {'tissue-chart','tissue-pressure-chart','tissue-pressure-legend'} <= set(page.ids),path
         if tool in ('plan','cc-plan'):
             assert {'profile-chart','time-cursor','play-profile','tissue-chart','compartment-grid'} <= set(page.ids),path
             assert ('open-gf-window' in page.ids) == (tool=='plan'),path
